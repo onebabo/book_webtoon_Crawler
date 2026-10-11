@@ -1,0 +1,12 @@
+python db_toon_step.py "https://toki34.com/webtoon/847903" --headed
+
+라이언 하트
+https://toki34.com/webtoon/11982
+
+
+라이언 하트
+python db_toon_step.py "https://toki34.com/webtoon/11982" --headed
+
+
+아가시 뜻대로
+python db_toon_step.py "https://toki34.com/webtoon/8629" --headed

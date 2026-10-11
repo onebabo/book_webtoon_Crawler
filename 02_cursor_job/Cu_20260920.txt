@@ -1,0 +1,11 @@
+
+
+기존 명령어
+python db_book_step.py "https://toki31.com/novel/63741" -o "D:/book" --createonly Y    -- 소설 정보만 가져오거나 갱신하기
+# --createonly Y: 회차 HTML/TEXT step 은 생략. 목록·DB 갱신 + 섬네일(cover/<id>.jpg) 저장까지 수행
+
+
+으로 참조해서  새로운 파일로 만들기
+전체 보유중이 소설에 대한 썸네일 이미지 정보만 수집/DB업데이트 하는 기능 만들어져
+
+

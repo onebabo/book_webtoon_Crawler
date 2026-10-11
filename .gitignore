@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Secrets / local config (절대 커밋 금지)
+.env
+config.ini
+sftp.json
+.vscode/
+.cursor/
+
+# Local / temp / large artifacts
+debug_toki.png
+TEMP_*/
+work/
+nouse/
+*.png
+saved_page*.html
+=4.12.0

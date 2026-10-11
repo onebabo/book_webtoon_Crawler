@@ -1,0 +1,52 @@
+==> 작업 준비 (PowerShell) — 프롬프트: (.venv) toon PS
+# 새 PowerShell 창으로 준비 (더블클릭 가능)
+D:\booktoon\booktoon_job_init.cmd
+D:\booktoon\booktoon_job_init.vbs      (CMD 창 깜빡임 없음)
+
+# 현재 세션에 바로 적용
+. D:\booktoon\booktoon_job_init.ps1
+
+* .venv 가 없으면 최초 1회 자동 생성 + pip install -r requirements.txt + playwright install chromium
+* config.ini 가 없으면 시작 시 노란 경고 표시
+
+# 수동
+d:
+cd workspaces/github/onebabo/book_webtoon_Crawler
+.venv\Scripts\Activate.ps1
+
+* DB 접속 설정: book_web_Crawler\config.ini 를 이 폴더로 복사 (형식은 config.example.ini, git 비추적)
+* 최초 실행 시 db.py 가 book_sql\00_toon_테이블생성.sql 을 읽어 toon_* 테이블을 자동 생성(IF NOT EXISTS)
+
+
+-- 웹툰 1건 수집 (작품정보 + 회차목록 + 섬네일 + 미수집 회차 이미지 전체)
+* 이미지 : D:\booktoon\{toon_id}\{episode_no}\001.jpg ...
+* 섬네일 : D:\booktoon\cover\{toon_id}.jpg
+* 이미 수집된 회차(has_images=1 + 폴더 존재)는 건너뜀 → 중단돼도 같은 명령 재실행으로 이어받기
+* 회차 100개 초과 작품은 목록이 페이징(?epage=2 ...) → 마지막 페이지까지 자동으로 돌며 전체 회차 수집
+  예) python db_toon_step.py "https://toki34.com/webtoon/11585" --headed   (총 110화, 2페이지)
+* 정보 파일 : D:\booktoon\{toon_id}\{toon_id}_{제목}.txt (경로/썸네일/회차목록 등, 실행 때마다 갱신)
+python db_toon_step.py "https://toki34.com/webtoon/847903"
+
+-- 작품정보/회차목록/섬네일/DB까지만 (이미지 수집 생략)
+python db_toon_step.py "https://toki34.com/webtoon/847903" --createonly Y
+
+-- 이번 실행에서 최대 N회차만 수집 (회차 번호가 아니라 개수)
+python db_toon_step.py "https://toki34.com/webtoon/847903" --num 5
+
+-- 특정 회차만 수집 / 이미 받은 회차 다시 받기
+python db_toon_step.py "https://toki34.com/webtoon/847903" --episode 1,3,5-10
+python db_toon_step.py "https://toki34.com/webtoon/847903" --episode 3 --force
+
+-- 저장 경로 / 대기시간 / 브라우저 옵션
+python db_toon_step.py "https://toki34.com/webtoon/847903" -o "D:/booktoon" --wait 2 --timeout 90
+python db_toon_step.py "https://toki34.com/webtoon/847903" --headed
+* 기본: headless 1차 접근 → 뷰어가 Cloudflare 에 막히면 일반 Chrome(CDP) 창으로 자동 전환
+* --headed : 처음부터 일반 Chrome 창으로 진행 (뷰어는 대부분 이 방식으로 수집됨)
+* 브라우저 프로필 기본값 D:\booktoon\.toki_browser (소설용 D:\book\.toki_browser 와 분리)
+  --profile "D:/book/.toki_browser" 로 소설용 프로필(보안확인 쿠키)을 재사용할 수 있음
+  (이때 소설 수집 크롬과 동시에 실행하지 말 것)
+
+
+
+
+python db_toon_step.py "https://toki34.com/webtoon/847903" --headed

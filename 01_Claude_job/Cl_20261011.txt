@@ -1,0 +1,57 @@
+book_web_Crawler 프로젝트를 기반으로  
+
+book_webtoon_Crawler을 만들어줘
+
+1차 작업 범위
+
+문서화작업은  최종 프로젝트 완료후에 작업는 통합 요청예정임.
+
+ 1. 테이블 구성
+    book 웹소설  book_info, book_work_list 
+    ==> toon  웹툰을 테이블을 구성을 전체를 별도로 구성
+    : 생성및 관리 부분은  book_sql 저장
+   샘플 : https://toki34.com/webtoon/847903 을 기준으로 구조분석
+
+  이미지는 로컬에 직접저장하는 방식 구현
+  D:\booktoon\{book_id}\{episode_no}
+
+
+  python db_toon_step.py "https://toki34.com/webtoon/847903" --headed
+
+
+  D:\booktoon\847903\{book_id}_{소설제목}.txt 파일을 만들고 
+  
+  파일 내용에도
+   경로 : https://toki34.com/webtoon/847903
+   썸머일리 등    웹툰을 실제경로 남겨주는 기능 추가
+
+
+
+
+
+
+
+-----------  주의사항 관련  -------------------------
+d:\book\book_job_init.cmd
+d:\book\book_job_init.cmd
+d:\book\book_job_init.vbs
+
+을 참고해서 이번 프로젝트에 적용해줘
+
+
+D:\booktoon\booktoon_job_init.cmd
+
+
+
+
+PS python db_toon_step.py "https://toki34.com/webtoon/847903"  기존 프로젝트와동일하게 브라우저 열려
+  있으면 닫기 먼저실행
+
+● Searching for find_processes|kill_process_trees|close_existing|…
+  ⎿  "find_processes|ki
+
+python db_toon_step.py "https://toki34.com/webtoon/847903" --headed
+프로필 오류 창이 한 번 더 보이면 확인만 누르고 Chrome 창은 닫지 마세요. 보안 확인이 빙글빙글만 돌면 그 창에서 F5를 누른 뒤 기다리세요.
+
+
+
