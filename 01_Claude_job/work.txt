@@ -36,3 +36,9 @@ python db_toon_step.py "https://toki34.com/webtoon/11585" --headed
 @Dev_work/get_book_pull.cmd @Dev_work/get_book_pull.ps1 @Dev_work/git_book_push.cmd @Dev_work/git_book_push.ps1  파일명 규칙을  _book_   -> _webtoon_
 
 으로 교체하고 해당 프로젝트 기준으로 내용수정해줘
+
+
+
+ㅍ\오류가 발생하지 않을 부분확인해서 @toki_chrome_cdp_R720_190.py 에 적용된 기능들도 다시 전체 가져와줘 (다른 pc에도 이상이 없어서  지금 pc만 바꾸면 무결성에 영향을 끼칠수 있음 )
+
+

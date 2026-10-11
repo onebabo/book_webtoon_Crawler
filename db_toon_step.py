@@ -36,9 +36,8 @@ from db import (
 from toki_chrome_cdp import (
     DEFAULT_USER_DATA_DIR,
     clear_cdp_port,
+    close_profile_chrome,
     connect_cdp_page,
-    find_processes,
-    kill_process_trees,
     start_chrome_cdp,
     stop_chrome_proc,
 )
@@ -387,13 +386,18 @@ class BrowserSession:
         self.context = None
         self.browser = None
         self.chrome_proc = None
+        self.cdp_port = None
         self.page = None
 
     def __enter__(self):
         self.profile_dir.mkdir(parents=True, exist_ok=True)
         if self.headless:
+            # 일반 Chrome 프로필과 분리합니다. 같은 폴더를 Playwright 가 고치면
+            # 설정 서명이 깨져 '프로필 오류' 대화상자가 반복됩니다.
+            headless_dir = self.profile_dir.with_name(self.profile_dir.name + "_headless")
+            headless_dir.mkdir(parents=True, exist_ok=True)
             options = {
-                "user_data_dir": str(self.profile_dir),
+                "user_data_dir": str(headless_dir),
                 "headless": True,
                 "args": STEALTH_ARGS,
                 "user_agent": USER_AGENT,
@@ -410,8 +414,8 @@ class BrowserSession:
         else:
             print("일반 Chrome(CDP)을 띄웁니다. Playwright 자동화 창이 아닙니다.")
             print(f"프로필: {self.profile_dir} (이 프로필로 연 크롬이 있으면 모두 종료 후 진행)")
-            self.chrome_proc, port = start_chrome_cdp(self.start_url or "about:blank", self.profile_dir)
-            self.browser, self.context, self.page = connect_cdp_page(self.playwright, port)
+            self.chrome_proc, self.cdp_port = start_chrome_cdp(self.start_url or "about:blank", self.profile_dir)
+            self.browser, self.context, self.page = connect_cdp_page(self.playwright, self.cdp_port)
         return self
 
     def ensure_page(self):
@@ -449,12 +453,10 @@ class BrowserSession:
                     closer.close()
                 except Exception:
                     pass
-        stop_chrome_proc(self.chrome_proc)
+        stop_chrome_proc(self.chrome_proc, self.cdp_port)
         # chrome.exe 는 런처 PID 가 먼저 끝나는 경우가 있어, 프로필로 남은 창을 한 번 더 닫습니다.
         if not self.headless:
-            leftover = find_processes("chrome.exe", [str(self.profile_dir)])
-            if leftover:
-                kill_process_trees(leftover)
+            close_profile_chrome(self.profile_dir)
         return False
 
     def goto(self, url: str, selector: str, timeout_ms: int, what: str) -> None:
@@ -751,15 +753,14 @@ def close_toki_browsers(profile_dir: Path) -> int:
 
     book_web_Crawler/db_book_step_type_1.py 와 동일. 다른 프로필의 일반 Chrome 은 건드리지 않습니다.
     """
-    pids = find_processes("chrome.exe", [str(profile_dir)])
-    if pids is None:
+    closed = close_profile_chrome(profile_dir)
+    if closed is None:
         print("열린 브라우저 확인 실패, 종료 생략")
         return 0
-    kill_process_trees(pids)
     clear_cdp_port(profile_dir)
-    if pids:
+    if closed:
         time.sleep(1)  # 프로필 잠금 해제 대기
-    return len(pids)
+    return closed
 
 
 def run(args) -> int:

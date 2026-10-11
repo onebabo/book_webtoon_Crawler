@@ -6,9 +6,11 @@ Playwright launch/persistent 창은 Cloudflare Turnstile 체크박스가 안 뜨
 
 from __future__ import annotations
 
+import base64
 import json
 import math
 import os
+import re
 import subprocess
 import sys
 import time
@@ -136,37 +138,95 @@ def _taskkill(pid: int, force: bool) -> None:
     )
 
 
-def stop_chrome_proc(proc: subprocess.Popen | None) -> None:
+def _cdp_browser_close(port: int) -> bool:
+    """디버깅 포트로 Browser.close 를 보냅니다. 강제 종료보다 프로필을 정상 저장합니다."""
+    from urllib.request import urlopen
+
+    try:
+        with urlopen(f"http://127.0.0.1:{port}/json/version", timeout=2) as res:
+            info = json.loads(res.read().decode("utf-8", "replace"))
+    except (OSError, ValueError, TimeoutError):
+        return False
+    ws_url = str(info.get("webSocketDebuggerUrl") or "")
+    if not ws_url.startswith("ws://"):
+        return False
+    host_port, _, path = ws_url[len("ws://"):].partition("/")
+    host, _, port_text = host_port.partition(":")
+    try:
+        import socket
+
+        sock = socket.create_connection((host, int(port_text)), timeout=3)
+    except OSError:
+        return False
+    key = base64.b64encode(os.urandom(16)).decode("ascii")
+    request = (
+        f"GET /{path} HTTP/1.1\r\n"
+        f"Host: {host_port}\r\n"
+        "Upgrade: websocket\r\n"
+        "Connection: Upgrade\r\n"
+        f"Sec-WebSocket-Key: {key}\r\n"
+        "Sec-WebSocket-Version: 13\r\n"
+        "\r\n"
+    )
+    try:
+        sock.sendall(request.encode("ascii"))
+        data = b""
+        while b"\r\n\r\n" not in data:
+            chunk = sock.recv(4096)
+            if not chunk:
+                break
+            data += chunk
+        if b" 101 " not in data.split(b"\r\n", 1)[0]:
+            return False
+        payload = json.dumps({"id": 1, "method": "Browser.close"}).encode("utf-8")
+        mask = os.urandom(4)
+        header = bytearray([0x81])
+        length = len(payload)
+        if length < 126:
+            header.append(0x80 | length)
+        else:
+            header.append(0x80 | 126)
+            header.extend(length.to_bytes(2, "big"))
+        header.extend(mask)
+        masked = bytes(byte ^ mask[index % 4] for index, byte in enumerate(payload))
+        sock.sendall(bytes(header) + masked)
+        return True
+    except OSError:
+        return False
+    finally:
+        sock.close()
+
+
+def stop_chrome_proc(proc: subprocess.Popen | None, port: int | None = None) -> None:
     """CDP용으로 띄운 Chrome 프로세스 트리를 종료합니다.
 
-    바로 /F 로 죽이면 Chrome 이 프로필 오류 대화상자를 띄우는 경우가 있어
-    먼저 정상 종료를 기다립니다.
+    바로 /F 로 죽이면 설정 저장이 끊겨 다음 실행마다
+    '프로필을 여는 동안 문제가 발생했습니다' 대화상자가 다시 뜹니다.
     """
+    if proc is not None and proc.poll() is not None and port is None:
+        return
+    if port:
+        _cdp_browser_close(port)
     if proc is None or proc.poll() is not None:
         return
     if sys.platform == "win32":
         _taskkill(proc.pid, force=False)
         try:
-            proc.wait(timeout=5)
+            proc.wait(timeout=12)
         except Exception:
             _taskkill(proc.pid, force=True)
         return
     proc.terminate()
     try:
-        proc.wait(timeout=5)
+        proc.wait(timeout=12)
     except Exception:
         proc.kill()
 
 
-def find_processes(image_name: str, markers: list[str]) -> list[int] | None:
-    """image_name(예: chrome.exe) 중 명령줄에 markers 중 하나가 들어간 PID 목록.
-
-    경로 구분자(\\, /)와 대소문자는 무시합니다. 조회에 실패하면 None 을 반환합니다(Windows 전용).
-    """
+def _process_rows(image_name: str) -> list[dict] | None:
+    """image_name 프로세스의 ProcessId, CommandLine 목록. 조회 실패 시 None."""
     if sys.platform != "win32":
         return []
-    import json
-
     query = (
         f"Get-CimInstance Win32_Process -Filter \"Name='{image_name}'\" | "
         "Select-Object ProcessId,CommandLine | ConvertTo-Json -Compress"
@@ -185,6 +245,17 @@ def find_processes(image_name: str, markers: list[str]) -> list[int] | None:
         return None
     if isinstance(rows, dict):
         rows = [rows]
+    return rows
+
+
+def find_processes(image_name: str, markers: list[str]) -> list[int] | None:
+    """image_name(예: chrome.exe) 중 명령줄에 markers 중 하나가 들어간 PID 목록.
+
+    경로 구분자(\\, /)와 대소문자는 무시합니다. 조회에 실패하면 None 을 반환합니다(Windows 전용).
+    """
+    rows = _process_rows(image_name)
+    if rows is None:
+        return None
 
     def norm(text: str) -> str:
         return text.replace("\\", "/").lower()
@@ -201,13 +272,54 @@ def kill_process_trees(pids: list[int]) -> None:
     """PID 와 하위 프로세스를 종료합니다. 정상 종료 후 남은 프로세스만 강제 종료합니다."""
     for pid in pids:
         _taskkill(pid, force=False)
-    deadline = time.monotonic() + 5
+    deadline = time.monotonic() + 12
     alive = [pid for pid in pids if _pid_running(pid)]
     while alive and time.monotonic() < deadline:
         time.sleep(0.3)
         alive = [pid for pid in alive if _pid_running(pid)]
     for pid in alive:
         _taskkill(pid, force=True)
+
+
+def close_profile_chrome(profile_dir: Path) -> int | None:
+    """이 프로필 Chrome 을 CDP 로 먼저 닫고, 남은 프로세스만 종료합니다.
+
+    조회에 실패하면 None 을 반환합니다.
+    """
+    rows = _process_rows("chrome.exe")
+    if rows is None:
+        return None
+    marker = str(profile_dir).replace("\\", "/").lower().rstrip("/")
+    matched = []
+    for row in rows:
+        command = row.get("CommandLine") or ""
+        text = command.replace("\\", "/").lower()
+        start = 0
+        found_dir = False
+        while True:
+            index = text.find(marker, start)
+            if index < 0:
+                break
+            after = text[index + len(marker):index + len(marker) + 1]
+            if after not in set("abcdefghijklmnopqrstuvwxyz0123456789_."):
+                found_dir = True
+                break
+            start = index + 1
+        if found_dir:
+            matched.append((int(row["ProcessId"]), command))
+    ports = []
+    for _pid, command in matched:
+        found = re.search(r"--remote-debugging-port=(\d+)", command)
+        if found:
+            ports.append(int(found.group(1)))
+    for port in dict.fromkeys(ports):
+        _cdp_browser_close(port)
+    if ports:
+        time.sleep(1)
+    pids = [pid for pid, _command in matched if _pid_running(pid)]
+    if pids:
+        kill_process_trees(pids)
+    return len(matched)
 
 
 def start_chrome_cdp(url: str, user_data_dir: Path) -> tuple[subprocess.Popen, int]:
@@ -243,11 +355,12 @@ def start_chrome_cdp(url: str, user_data_dir: Path) -> tuple[subprocess.Popen, i
         kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
     proc = subprocess.Popen(args, **kwargs)
     if not wait_cdp_ready(port):
-        stop_chrome_proc(proc)
+        stop_chrome_proc(proc, port)
         raise RuntimeError(
             f"Chrome CDP({port}) 연결에 실패했습니다. "
             f"프로필을 쓰는 다른 크롬이 있으면 모두 종료 후 다시 시도하세요: {user_data_dir}"
         )
+    write_cdp_port(port, user_data_dir)
     return proc, port
 
 
