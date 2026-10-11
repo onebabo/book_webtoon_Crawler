@@ -29,3 +29,10 @@ python db_toon_step.py "https://toki34.com/webtoon/11585" --headed
 등  에피소드가 100개 넘어가서  목록이 페이징 기능이 있는 경우  에피소드 정보를 전체를 가져오지
 못하고 수집도 전체를 하지 못함
 
+
+
+
+
+@Dev_work/get_book_pull.cmd @Dev_work/get_book_pull.ps1 @Dev_work/git_book_push.cmd @Dev_work/git_book_push.ps1  파일명 규칙을  _book_   -> _webtoon_
+
+으로 교체하고 해당 프로젝트 기준으로 내용수정해줘
