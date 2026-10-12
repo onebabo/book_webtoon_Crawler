@@ -1,0 +1,25 @@
+SFTP 확장이 켜지지 않는 원인을 설정 파일부터 확인하겠습니다.
+
+drwxr-xr-x 1 onebabo 197121   0 10월 11 18:11 ./
+drwxr-xr-x 1 onebabo 197121   0 10월 12 02:09 ../
+-rw-r--r-- 1 onebabo 197121 644 10월 11 18:12 sftp.json
+---extensions dir---
+jmwerk.sftpresso-1.33.0-universal/
+-rw-r--r-- 1 onebabo 197121  8997  9월 15 22:16 readme.md
+drwxr-xr-x 1 onebabo 197121     0  9월 15 22:16 resources/
+drwxr-xr-x 1 onebabo 197121     0  9월 15 22:16 schema/
+==== package.json activation ====
+--: line 1: python: command not found
+drwxr-xr-x 1 onebabo 197121 0 10월 11 22:59 20261011T225924/
+drwxr-xr-x 1 onebabo 197121 0 10월 11 16:55 20261011T165518/
+drwxr-xr-x 1 onebabo 197121 0 10월 11 16:55 20261011T165516/
+==== recent logs mentioning sftp ====
+latest log dir: /c/Users/onebabo/AppData/Roaming/Cursor/logs/20261012T022541//
+534:			"version": "1.0.11",
+2214:	"version": "3.24.12",
+==== log dirs ====
+/c/Users/onebabo/AppData/Roaming/Cursor/logs/20261012T022541/cli.log
+==== search sftp in recent logs ====
+r/extensions/formulahendry.auto-rename-tag-0.1.10-universal","scheme":"file"},"relativeLocation":"formulahendry.auto-rename-tag-0.1.10-universal","metadata":{"installedTimestamp":1789021298156,"source":"gallery","id":"6e440e71-8ed9-4f25-bb78-4b13096b8a03","publisherId":"38bbe3f0-5204-4170-845e-c2f966d979b8","publisherDisplayName":"formulahendry","targetPlatform":"universal","updated":false,"private":false,"isPreReleaseVersion":false,"hasPreReleaseVersion":false}},{"identifier":{"id":"hookyqr.beautify","uuid":"697255a9-3f36-44c8-b084-d3b91edfb23a"},"version":"1.4.11","location":{"$mid":1,"path":"/c:/Users/onebabo/.cursor/extensions/hookyqr.beautify-1.4.11-universal","scheme":"file"},"relativeLocation":"hookyqr.beautify-1.4.11-universal","metadata":{"installedTimestamp":1789021317071,"source":"gallery","id":"697255a9-3f36-44c8-b084-d3b91edfb23a","publisherId":"901b401e-7657-4a33-8c9a-0854c569607e","publisherDisplayName":"HookyQR","targetPlatform":"universal","updated":false,"private":false,"isPreReleaseVersion":false,"hasPreReleaseVersion":false}},{"identifier":{"id":"humao.rest-client","uuid":"dda49fd5-1f3b-4d25-bf61-4fc41905ede5"},"version":"0.25.0","location":{"$mid":1,"path":"/c:/Users/onebabo/.cursor/extensions/humao.rest-client-0.25.0-universal","scheme":"file"},"relativeLocation":"humao.rest-client-0.25.0-universal","metadata":{"installedTimestamp":1789021321371,"source":"gallery","id":"dda49fd5-1f3b-4d25-bf61-4fc41905ede5","publisherId":"aa260071-fe15-4a92-8990-7b8753d9cbc7","publisherDisplayName":"humao","targetPlatform":"universal","updated":false,"private":false,"isPreReleaseVersion":false,"hasPreReleaseVersion":false}},{"identifier":{"id":"johnstoncode.svn-scm","uuid":"fee8b2f6-52f6-47a2-9aa5-710b4a8872f3"},"version":"2.15.2","location":{"]
+/c/Users/onebabo/AppData/Roaming/Cursor/User/workspaceStorage/09cbf3ae294b96fd90366056040dd2bf/workspace.json
+/c/Users/onebabo/AppData/Roaming/Cursor/User/workspaceStorage/f1ff6ad380100aa5d4c24e607af39ec8/workspace.json
