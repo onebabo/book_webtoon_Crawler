@@ -20,7 +20,7 @@ import sys
 import time
 from datetime import date
 from pathlib import Path
-from urllib.parse import urljoin, urlparse
+from urllib.parse import unquote, urljoin, urlparse
 
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 from playwright.sync_api import sync_playwright
@@ -46,6 +46,8 @@ DEFAULT_BASE_PATH = Path("D:/booktoon")  # 기본 저장 루트 경로
 DEFAULT_URL = "https://toki34.com/webtoon/847903"  # 기본 웹툰 URL(미지정 시)
 EPISODE_WAIT_SEC = 2.0  # 회차 간 대기(초)
 IMAGE_RETRY = 2  # 이미지 1장 다운로드 재시도 횟수
+# 뷰어에 섞인 가짜 이미지 확장자. 진짜 장면도 .js/.css/.woff/.json 등으로 위장해 오므로 그런 확장자는 넣지 않는다.
+DECOY_IMAGE_EXTS = {"svg"}
 SCROLL_STABLE_ROUNDS = 3  # 회차 목록 무한스크롤: 개수 변화 없는 연속 횟수
 # 뷰어 자동 스크롤(img loading=lazy 강제 로딩). 실측(105장/115,000px): 1.0초=100/105장, 1.5초 이상=전부,
 # 한 번에 ~7,000px 넘게 건너뛰면 사이 이미지가 로딩되지 않음 → 2초 기본, 한 스텝 최대 2,500px, 최대 3초.
@@ -301,6 +303,15 @@ def parse_episode_date(value: str) -> str | None:
         return date(year, month, day).isoformat()
     except ValueError:
         return None
+
+
+def is_decoy_image_url(url: str) -> bool:
+    """뷰어 이미지 목록에 섞인 가짜 이미지(svg, placeholder)인지.
+    원본 사이트에서도 웹툰 장면이 아니므로 받지 않고 회차 장수(image_cnt)에서도 뺀다."""
+    path = unquote(urlparse(url).path).lower()
+    name = path.rsplit("/", 1)[-1]
+    ext = name.rsplit(".", 1)[-1] if "." in name else ""
+    return ext in DECOY_IMAGE_EXTS or "placeholder" in path
 
 
 def image_ext(body: bytes | None) -> str | None:
@@ -696,6 +707,10 @@ def collect_episode_images(
     scroll_viewer_to_bottom(page)
     items = page.evaluate(EXTRACT_VIEWER_JS) or []
     urls = [urljoin(page.url, item["src"]) for item in items if item.get("src") and not item["src"].startswith("data:")]
+    decoys = [url for url in urls if is_decoy_image_url(url)]
+    if decoys:
+        print(f"  - 가짜 이미지 {len(decoys)}장 제외(svg·placeholder)")
+        urls = [url for url in urls if not is_decoy_image_url(url)]
     if not urls:
         print("  - 뷰어 이미지 목록이 비어 있습니다.")
         return 0, []
