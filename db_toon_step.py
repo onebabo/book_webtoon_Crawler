@@ -47,8 +47,16 @@ DEFAULT_URL = "https://toki34.com/webtoon/847903"  # 기본 웹툰 URL(미지정
 EPISODE_WAIT_SEC = 2.0  # 회차 간 대기(초)
 IMAGE_RETRY = 2  # 이미지 1장 다운로드 재시도 횟수
 SCROLL_STABLE_ROUNDS = 3  # 회차 목록 무한스크롤: 개수 변화 없는 연속 횟수
+# 뷰어 자동 스크롤(img loading=lazy 강제 로딩). 실측(105장/115,000px): 1.0초=100/105장, 1.5초 이상=전부,
+# 한 번에 ~7,000px 넘게 건너뛰면 사이 이미지가 로딩되지 않음 → 2초 기본, 한 스텝 최대 2,500px, 최대 3초.
+VIEWER_SCROLL_MS = 2000  # 최하단까지 기본 스크롤 시간(ms)
+VIEWER_SCROLL_MAX_MS = 3000  # 페이지가 길어도 넘기지 않는 스크롤 시간(ms)
+VIEWER_SCROLL_STEP_MS = 50  # 스크롤 간격(ms)
+VIEWER_SCROLL_MAX_JUMP = 2500  # 한 스텝 최대 이동(px)
+VIEWER_LOAD_WAIT_MS = 3000  # 스크롤 후 이미지 로딩 완료 대기 상한(ms)
 
 TOON_ID_RE = re.compile(r"/webtoon/(\d+)(?:/|$)")
+EPISODE_URL_RE = re.compile(r"/webtoon/(\d+)/([^/?#]+)/?$")  # 회차(뷰어) URL
 EPISODE_NO_RE = re.compile(r"-(\d+)$")
 
 STEALTH_ARGS = ["--disable-blink-features=AutomationControlled"]
@@ -147,6 +155,26 @@ EXTRACT_VIEWER_JS = """() => Array.from(document.querySelectorAll("div.vw-imgs i
     alt: img.getAttribute("alt") || "",
 }))"""
 
+# 뷰어 최하단까지 일정 속도로 스크롤. 스크롤 중 늘어나는 높이를 매 스텝 다시 계산합니다.
+VIEWER_SCROLL_JS = """async ([baseMs, maxMs, stepMs, maxJump]) => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const height = () => document.documentElement.scrollHeight - window.innerHeight;
+    const start = performance.now();
+    const total = Math.max(1, height());
+    const duration = Math.min(maxMs, Math.max(baseMs, total / maxJump * stepMs));
+    const step = Math.max(16, Math.min(stepMs, duration * maxJump / total));
+    while (true) {
+        const elapsed = performance.now() - start;
+        window.scrollTo(0, Math.min(1, elapsed / duration) * height());
+        if (elapsed >= duration) break;
+        await sleep(step);
+    }
+    window.scrollTo(0, height());
+    return Math.round(performance.now() - start);
+}"""
+VIEWER_LOADED_JS = """() => Array.from(document.querySelectorAll("div.vw-imgs img.viewer-ratio-img"))
+    .every((img) => img.complete && img.naturalWidth > 0)"""
+
 BROWSER_FETCH_JS = """async (url) => {
     try {
         const response = await fetch(url, { credentials: "omit", referrerPolicy: "no-referrer" });
@@ -176,6 +204,15 @@ def toon_id_from_url(url: str) -> str:
     if not match:
         raise ValueError(f"웹툰 ID를 URL에서 찾을 수 없습니다: {url}")
     return match.group(1)
+
+
+def split_episode_url(url: str) -> tuple[str, str | None]:
+    """회차(뷰어) URL 이면 (목록 URL, 회차 코드), 목록 URL 이면 (url, None)."""
+    parsed = urlparse(url)
+    match = EPISODE_URL_RE.search(parsed.path)
+    if not match:
+        return url, None
+    return parsed._replace(path=f"/webtoon/{match.group(1)}", query="", fragment="").geturl(), match.group(2)
 
 
 def resolve_base_path(base_path: str | None) -> Path:
@@ -624,6 +661,23 @@ def save_cover(page, cover_url: str, dest: Path) -> tuple[str | None, str | None
 # ---------------------------------------------------------------------
 # 회차(뷰어) 이미지 저장
 # ---------------------------------------------------------------------
+def scroll_viewer_to_bottom(page) -> None:
+    """lazy 이미지가 멈춘 스크롤 때문에 늦게 받아지지 않도록 최하단까지 자동 스크롤 후 로딩을 잠깐 기다립니다."""
+    try:
+        elapsed = page.evaluate(
+            VIEWER_SCROLL_JS,
+            [VIEWER_SCROLL_MS, VIEWER_SCROLL_MAX_MS, VIEWER_SCROLL_STEP_MS, VIEWER_SCROLL_MAX_JUMP],
+        )
+        page.wait_for_function(VIEWER_LOADED_JS, timeout=VIEWER_LOAD_WAIT_MS)
+        print(f"  - 자동 스크롤 완료({elapsed / 1000:.1f}초), 이미지 로딩 완료")
+    except PlaywrightTimeoutError:
+        print(f"  - 자동 스크롤 완료, 일부 이미지 로딩 대기 초과({VIEWER_LOAD_WAIT_MS // 1000}초) → 다운로드 진행")
+    except Exception as e:  # noqa: BLE001  스크롤 실패해도 다운로드는 진행
+        if _is_closed_error(e):
+            raise
+        print(f"  - 자동 스크롤 실패(다운로드는 진행): {e}")
+
+
 def collect_episode_images(
     session: BrowserSession,
     toon_id: str,
@@ -635,6 +689,7 @@ def collect_episode_images(
     page = session.page
     session.goto(episode["org_url"], VIEWER_IMG_SELECTOR, timeout_ms, f"{episode['episode_no']}화 뷰어")
     page.wait_for_timeout(800)
+    scroll_viewer_to_bottom(page)
     items = page.evaluate(EXTRACT_VIEWER_JS) or []
     urls = [urljoin(page.url, item["src"]) for item in items if item.get("src") and not item["src"].startswith("data:")]
     if not urls:
@@ -671,10 +726,13 @@ def select_target_episodes(
     only: set[int] | None,
     num: int | None,
     force: bool,
+    only_code: str | None = None,
 ) -> list[dict]:
     targets = []
     for ep in episodes:
         if only is not None and ep["episode_no"] not in only:
+            continue
+        if only_code is not None and ep["episode_code"] != only_code:
             continue
         row = status.get(ep["episode_code"]) or {}
         done = row.get("has_images") and episode_dir(base_path, toon_id, ep["episode_no"]).is_dir()
@@ -721,8 +779,11 @@ def run_session(session: BrowserSession, args, toon_id: str, base_path: Path) ->
 
     status = fetch_episode_status(int(toon_id))
     targets = select_target_episodes(
-        episodes, status, base_path, toon_id, parse_episode_spec(args.episode), args.num, args.force
+        episodes, status, base_path, toon_id, parse_episode_spec(args.episode), args.num, args.force,
+        args.episode_code,
     )
+    if args.episode_code and not any(ep["episode_code"] == args.episode_code for ep in episodes):
+        print(f"주의: 회차 코드 {args.episode_code} 를 목록에서 찾지 못했습니다.")
     print(f"이미지 수집 대상: {len(targets)}회차 (저장 경로: {(base_path / toon_id).as_posix()}/<회차>)")
     ok = fail = 0
     for index, ep in enumerate(targets, start=1):
@@ -805,7 +866,10 @@ def run(args) -> int:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="웹툰 1건 정보/회차 이미지 수집 (toki webtoon)")
-    parser.add_argument("url", nargs="?", default=DEFAULT_URL, help="웹툰 목록 URL (예: https://toki34.com/webtoon/847903)")
+    parser.add_argument(
+        "url", nargs="?", default=DEFAULT_URL,
+        help="웹툰 목록 URL (예: https://toki34.com/webtoon/847903) 또는 회차 URL(…/webtoon/4583/1057871: 그 회차만 수집)",
+    )
     parser.add_argument("-o", "--output", default=str(DEFAULT_BASE_PATH), help="저장 루트 경로 (기본 D:/booktoon)")
     parser.add_argument("--createonly", default="N", help="Y: 작품정보/회차목록/섬네일/DB까지만, 이미지 수집 생략")
     parser.add_argument("--num", type=int, default=None, help="이번 실행에서 수집할 최대 회차 수 (미지정: 전체)")
@@ -817,6 +881,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--wait", type=float, default=EPISODE_WAIT_SEC, help="회차 간 대기(초)")
     args = parser.parse_args()
     args.createonly = str(args.createonly).strip().upper() == "Y"
+    args.url, args.episode_code = split_episode_url(args.url)
+    if args.episode_code:
+        print(f"회차 URL → 목록 {args.url} 기준으로 회차 {args.episode_code} 만 수집합니다.")
     return args
 
 

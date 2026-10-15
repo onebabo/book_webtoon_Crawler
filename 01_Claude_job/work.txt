@@ -1,44 +1,9 @@
+python db_toon_step.py "https://sbxh9.com/webtoon/4583/1057871" --headed
 
-  
-D:\booktoon\booktoon_job_init.cmd
+을 실행해서  .toki_browser  브라우저 호출 되어서 이미지를 가져오는 방식인데
 
+페이지 접근시  스크롤이 멈춰 있으면  이미지 다운로드가 지연되는 현상이 있어서
 
+일정한 시간  페이지를 기준 3초 이내에 최 하단까지 자동으로 스크롤이 될수 있도록 구현
 
-PS python db_toon_step.py "https://toki34.com/webtoon/847903"  기존 프로젝트와동일하게 브라우저 열려
-  있으면 닫기 먼저실행
-
-● Searching for find_processes|kill_process_trees|close_existing|…
-  ⎿  "find_processes|ki
-
-
-
-python db_toon_step.py "https://toki34.com/webtoon/847903" --headed
-
-
-  D:\booktoon\847903\{book_id}_{소설제목}.txt 파일을 만들고 
-  
-  파일 내용에도
-   경로 : https://toki34.com/webtoon/847903
-   썸머일리 등    웹툰을 실제경로 남겨주는 기능 추가
-
-
-
-
-python db_toon_step.py "https://toki34.com/webtoon/11585" --headed
-
-등  에피소드가 100개 넘어가서  목록이 페이징 기능이 있는 경우  에피소드 정보를 전체를 가져오지
-못하고 수집도 전체를 하지 못함
-
-
-
-
-
-@Dev_work/get_book_pull.cmd @Dev_work/get_book_pull.ps1 @Dev_work/git_book_push.cmd @Dev_work/git_book_push.ps1  파일명 규칙을  _book_   -> _webtoon_
-
-으로 교체하고 해당 프로젝트 기준으로 내용수정해줘
-
-
-
-ㅍ\오류가 발생하지 않을 부분확인해서 @toki_chrome_cdp_R720_190.py 에 적용된 기능들도 다시 전체 가져와줘 (다른 pc에도 이상이 없어서  지금 pc만 바꾸면 무결성에 영향을 끼칠수 있음 )
-
-
+스크롤 속도는  최적화가 필요해서  몇번의 테스트 해서  최적의 시간을 설정해줘
