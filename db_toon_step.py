@@ -601,6 +601,10 @@ def build_episode_rows(page_url: str, data: dict, toon_id: str) -> list[dict]:
 def build_toon_info(page_url: str, data: dict, toon_id: str, episodes: list[dict]) -> tuple[dict, list[str]]:
     stats = data.get("stats") or {}
     total = to_int(stats.get("총 회차")) or to_int(data.get("ldPages")) or len(episodes)
+    # 사이트 회차 번호가 건너뛴 경우(예: 44화 없이 43→45): 목록이 마지막 번호까지 다 읽혔는데도
+    # 건수가 총 회차보다 적으면 빠진 번호는 원래 없는 회차이므로 목록 건수를 총 회차로 쓴다.
+    if episodes and len(episodes) < total and max(e["episode_no"] for e in episodes) >= total:
+        total = len(episodes)
     rating = to_float(data.get("ldRating")) or to_float(stats.get("평점"))
     authors = data.get("authors") or ([data["ldAuthor"]] if data.get("ldAuthor") else [])
     info = {
