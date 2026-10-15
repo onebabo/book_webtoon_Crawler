@@ -18,6 +18,7 @@ import base64
 import re
 import sys
 import time
+from collections.abc import Callable
 from datetime import date
 from pathlib import Path
 from urllib.parse import unquote, urljoin, urlparse
@@ -55,7 +56,8 @@ VIEWER_SCROLL_MS = 2000  # 최하단까지 기본 스크롤 시간(ms)
 VIEWER_SCROLL_MAX_MS = 3000  # 페이지가 길어도 넘기지 않는 스크롤 시간(ms)
 VIEWER_SCROLL_STEP_MS = 50  # 스크롤 간격(ms)
 VIEWER_SCROLL_MAX_JUMP = 2500  # 한 스텝 최대 이동(px)
-VIEWER_LOAD_WAIT_MS = 3000  # 스크롤 후 이미지 로딩 완료 대기 상한(ms)
+# 스크롤 중 응답을 이미 캐시하므로, 전부 complete 될 때까지 오래 기다리지 않음(재요청·ECONNRESET 유발).
+VIEWER_LOAD_WAIT_MS = 1200  # 스크롤 후 이미지 로딩 완료 대기 상한(ms)
 
 TOON_ID_RE = re.compile(r"/webtoon/(\d+)(?:/|$)")
 EPISODE_URL_RE = re.compile(r"/webtoon/(\d+)/([^/?#]+)/?$")  # 회차(뷰어) URL
@@ -179,7 +181,18 @@ VIEWER_LOADED_JS = """() => Array.from(document.querySelectorAll("div.vw-imgs im
 
 BROWSER_FETCH_JS = """async (url) => {
     try {
-        const response = await fetch(url, { credentials: "omit", referrerPolicy: "no-referrer" });
+        // 스크롤로 이미 받은 이미지는 디스크/메모리 캐시 우선(네트워크·CDN 충돌 회피)
+        let response;
+        try {
+            response = await fetch(url, {
+                credentials: "omit",
+                referrerPolicy: "no-referrer",
+                cache: "force-cache",
+            });
+            if (!response.ok) throw new Error("cache miss");
+        } catch (e) {
+            response = await fetch(url, { credentials: "omit", referrerPolicy: "no-referrer" });
+        }
         if (!response.ok) return { ok: false, status: response.status, b64: "" };
         const bytes = new Uint8Array(await response.arrayBuffer());
         let binary = "";
@@ -635,8 +648,28 @@ def build_toon_info(page_url: str, data: dict, toon_id: str, episodes: list[dict
     return info, categories
 
 
-def download_bytes(page, url: str) -> bytes | None:
-    """APIRequest(쿠키 공유, CORS 무관) 우선, 실패 시 페이지 컨텍스트 fetch 로 재시도."""
+def _browser_fetch_bytes(page, url: str) -> bytes | None:
+    """페이지 컨텍스트 fetch(캐시 우선). 스크롤로 받은 이미지 재사용에 유리합니다."""
+    try:
+        result = page.evaluate(BROWSER_FETCH_JS, url)
+    except Exception:  # noqa: BLE001
+        return None
+    if isinstance(result, dict) and result.get("ok") and result.get("b64"):
+        body = base64.b64decode(result["b64"])
+        if image_ext(body):
+            return body
+    return None
+
+
+def download_bytes(page, url: str, *, prefer_cache: bool = False) -> bytes | None:
+    """이미지 바이트 수신. prefer_cache=True 이면 브라우저 캐시 fetch 를 먼저 시도합니다.
+
+    스크롤 직후 APIRequest 를 바로 쓰면 CDN 연결이 겹쳐 ECONNRESET 이 자주 납니다.
+    """
+    if prefer_cache:
+        body = _browser_fetch_bytes(page, url)
+        if body:
+            return body
     for attempt in range(1, IMAGE_RETRY + 1):
         try:
             response = page.request.get(url, timeout=60000)
@@ -648,12 +681,43 @@ def download_bytes(page, url: str) -> bytes | None:
                 print(f"  - 다운로드 실패(status={response.status}) {attempt}/{IMAGE_RETRY}")
         except Exception as e:  # noqa: BLE001
             print(f"  - 다운로드 오류 {attempt}/{IMAGE_RETRY}: {e}")
-    result = page.evaluate(BROWSER_FETCH_JS, url)
-    if isinstance(result, dict) and result.get("ok") and result.get("b64"):
-        body = base64.b64decode(result["b64"])
-        if image_ext(body):
+    if not prefer_cache:
+        body = _browser_fetch_bytes(page, url)
+        if body:
             return body
     return None
+
+
+def attach_image_response_capture(page) -> tuple[dict[str, bytes], Callable[[], None]]:
+    """뷰어 스크롤 중 <img> 네트워크 응답을 URL→bytes 로 모아 재다운로드를 피합니다."""
+    captured: dict[str, bytes] = {}
+
+    def on_response(response) -> None:
+        try:
+            if response.status != 200:
+                return
+            # <img> 로 로드된 리소스만(위장 확장자 .woff/.js 포함)
+            if response.request.resource_type != "image":
+                return
+            body = response.body()
+            if not image_ext(body):
+                return
+            captured[response.url] = body
+            req_url = response.request.url
+            if req_url and req_url != response.url:
+                captured[req_url] = body
+        except Exception:  # noqa: BLE001  개별 응답 실패는 무시(이후 재요청)
+            return
+
+    page.on("response", on_response)
+
+    def detach() -> None:
+        try:
+            page.remove_listener("response", on_response)
+        except Exception:  # noqa: BLE001
+            pass
+
+    return captured, detach
 
 
 def save_cover(page, cover_url: str, dest: Path) -> tuple[str | None, str | None]:
@@ -686,7 +750,8 @@ def scroll_viewer_to_bottom(page) -> None:
         page.wait_for_function(VIEWER_LOADED_JS, timeout=VIEWER_LOAD_WAIT_MS)
         print(f"  - 자동 스크롤 완료({elapsed / 1000:.1f}초), 이미지 로딩 완료")
     except PlaywrightTimeoutError:
-        print(f"  - 자동 스크롤 완료, 일부 이미지 로딩 대기 초과({VIEWER_LOAD_WAIT_MS // 1000}초) → 다운로드 진행")
+        # 전부 complete 전에도 스크롤 중 수신분은 이미 캐시됨 → 짧게 끊고 저장 진행
+        print(f"  - 자동 스크롤 완료, 로딩 대기 {VIEWER_LOAD_WAIT_MS / 1000:.1f}초 초과 → 수신분·캐시로 저장")
     except Exception as e:  # noqa: BLE001  스크롤 실패해도 다운로드는 진행
         if _is_closed_error(e):
             raise
@@ -702,39 +767,57 @@ def collect_episode_images(
 ) -> tuple[int, list[dict]]:
     """회차 뷰어를 열어 이미지를 <base>/{toon_id}/{episode_no}/NNN.ext 로 저장합니다."""
     page = session.page
-    session.goto(episode["org_url"], VIEWER_IMG_SELECTOR, timeout_ms, f"{episode['episode_no']}화 뷰어")
-    page.wait_for_timeout(800)
-    scroll_viewer_to_bottom(page)
-    items = page.evaluate(EXTRACT_VIEWER_JS) or []
-    urls = [urljoin(page.url, item["src"]) for item in items if item.get("src") and not item["src"].startswith("data:")]
-    decoys = [url for url in urls if is_decoy_image_url(url)]
-    if decoys:
-        print(f"  - 가짜 이미지 {len(decoys)}장 제외(svg·placeholder)")
-        urls = [url for url in urls if not is_decoy_image_url(url)]
-    if not urls:
-        print("  - 뷰어 이미지 목록이 비어 있습니다.")
-        return 0, []
+    # goto·스크롤로 브라우저가 받는 응답을 가로채 재다운로드(APIRequest) 부담·ECONNRESET 을 줄임
+    captured, detach_capture = attach_image_response_capture(page)
+    try:
+        session.goto(episode["org_url"], VIEWER_IMG_SELECTOR, timeout_ms, f"{episode['episode_no']}화 뷰어")
+        page.wait_for_timeout(800)
+        scroll_viewer_to_bottom(page)
+        items = page.evaluate(EXTRACT_VIEWER_JS) or []
+        urls = [
+            urljoin(page.url, item["src"])
+            for item in items
+            if item.get("src") and not item["src"].startswith("data:")
+        ]
+        decoys = [url for url in urls if is_decoy_image_url(url)]
+        if decoys:
+            print(f"  - 가짜 이미지 {len(decoys)}장 제외(svg·placeholder)")
+            urls = [url for url in urls if not is_decoy_image_url(url)]
+        if not urls:
+            print("  - 뷰어 이미지 목록이 비어 있습니다.")
+            return 0, []
 
-    target_dir = episode_dir(base_path, toon_id, episode["episode_no"])
-    target_dir.mkdir(parents=True, exist_ok=True)
-    width = max(3, len(str(len(urls))))
-    saved: list[dict] = []
-    for page_no, url in enumerate(urls, start=1):
-        body = download_bytes(page, url)
-        if not body:
-            print(f"  - [{page_no}/{len(urls)}] 저장 실패: {url}")
-            continue
-        dest = target_dir / f"{page_no:0{width}d}.{image_ext(body)}"
-        dest.write_bytes(body)
-        saved.append(
-            {
-                "page_no": page_no,
-                "org_url": url,
-                "file_path": dest.as_posix(),
-                "file_size": len(body),
-            }
-        )
-    return len(urls), saved
+        target_dir = episode_dir(base_path, toon_id, episode["episode_no"])
+        target_dir.mkdir(parents=True, exist_ok=True)
+        width = max(3, len(str(len(urls))))
+        saved: list[dict] = []
+        cache_hits = 0
+        refetched = 0
+        for page_no, url in enumerate(urls, start=1):
+            body = captured.get(url)
+            if body:
+                cache_hits += 1
+            else:
+                body = download_bytes(page, url, prefer_cache=True)
+                if body:
+                    refetched += 1
+            if not body:
+                print(f"  - [{page_no}/{len(urls)}] 저장 실패: {url}")
+                continue
+            dest = target_dir / f"{page_no:0{width}d}.{image_ext(body)}"
+            dest.write_bytes(body)
+            saved.append(
+                {
+                    "page_no": page_no,
+                    "org_url": url,
+                    "file_path": dest.as_posix(),
+                    "file_size": len(body),
+                }
+            )
+        print(f"  - 저장 경로: 스크롤수신 {cache_hits}장 / 재요청 {refetched}장 / 실패 {len(urls) - len(saved)}장")
+        return len(urls), saved
+    finally:
+        detach_capture()
 
 
 def select_target_episodes(
