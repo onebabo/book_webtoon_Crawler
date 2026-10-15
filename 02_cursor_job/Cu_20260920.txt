@@ -9,3 +9,4 @@ python db_book_step.py "https://toki31.com/novel/63741" -o "D:/book" --createonl
 전체 보유중이 소설에 대한 썸네일 이미지 정보만 수집/DB업데이트 하는 기능 만들어져
 
 
+
