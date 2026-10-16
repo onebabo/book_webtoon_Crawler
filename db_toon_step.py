@@ -52,12 +52,12 @@ DECOY_IMAGE_EXTS = {"svg"}
 SCROLL_STABLE_ROUNDS = 3  # 회차 목록 무한스크롤: 개수 변화 없는 연속 횟수
 # 뷰어 자동 스크롤(img loading=lazy 강제 로딩). 실측(105장/115,000px): 1.0초=100/105장, 1.5초 이상=전부,
 # 한 번에 ~7,000px 넘게 건너뛰면 사이 이미지가 로딩되지 않음 → 2초 기본, 한 스텝 최대 2,500px, 최대 3초.
-VIEWER_SCROLL_MS = 2000  # 최하단까지 기본 스크롤 시간(ms)
-VIEWER_SCROLL_MAX_MS = 3000  # 페이지가 길어도 넘기지 않는 스크롤 시간(ms)
+VIEWER_SCROLL_MS = 4000  # 최하단까지 기본 스크롤 시간(ms)
+VIEWER_SCROLL_MAX_MS = 15000  # 긴 회차(60장+)에서도 lazy 로딩이 따라오도록 상한 확대
 VIEWER_SCROLL_STEP_MS = 50  # 스크롤 간격(ms)
-VIEWER_SCROLL_MAX_JUMP = 2500  # 한 스텝 최대 이동(px)
-# 스크롤 중 응답을 이미 캐시하므로, 전부 complete 될 때까지 오래 기다리지 않음(재요청·ECONNRESET 유발).
-VIEWER_LOAD_WAIT_MS = 1200  # 스크롤 후 이미지 로딩 완료 대기 상한(ms)
+VIEWER_SCROLL_MAX_JUMP = 1500  # 한 스텝 최대 이동(px) — 너무 크면 사이 장 누락
+# 스크롤 중 응답을 캐시하지만, 미완료 장이 있으면 강제 로드로 보충하므로 여유 있게 대기
+VIEWER_LOAD_WAIT_MS = 8000  # 스크롤 후 이미지 로딩 완료 대기 상한(ms)
 
 TOON_ID_RE = re.compile(r"/webtoon/(\d+)(?:/|$)")
 EPISODE_URL_RE = re.compile(r"/webtoon/(\d+)/([^/?#]+)/?$")  # 회차(뷰어) URL
@@ -665,6 +665,8 @@ def download_bytes(page, url: str, *, prefer_cache: bool = False) -> bytes | Non
     """이미지 바이트 수신. prefer_cache=True 이면 브라우저 캐시 fetch 를 먼저 시도합니다.
 
     스크롤 직후 APIRequest 를 바로 쓰면 CDN 연결이 겹쳐 ECONNRESET 이 자주 납니다.
+    위장 확장자(.woff/.js/.css 등)는 APIRequest 가 실제 폰트·스크립트를 받을 수 있어
+    마지막에 브라우저 컨텍스트 fetch 를 한 번 더 시도합니다.
     """
     if prefer_cache:
         body = _browser_fetch_bytes(page, url)
@@ -681,10 +683,9 @@ def download_bytes(page, url: str, *, prefer_cache: bool = False) -> bytes | Non
                 print(f"  - 다운로드 실패(status={response.status}) {attempt}/{IMAGE_RETRY}")
         except Exception as e:  # noqa: BLE001
             print(f"  - 다운로드 오류 {attempt}/{IMAGE_RETRY}: {e}")
-    if not prefer_cache:
-        body = _browser_fetch_bytes(page, url)
-        if body:
-            return body
+    body = _browser_fetch_bytes(page, url)
+    if body:
+        return body
     return None
 
 
@@ -758,6 +759,94 @@ def scroll_viewer_to_bottom(page) -> None:
         print(f"  - 자동 스크롤 실패(다운로드는 진행): {e}")
 
 
+# 뷰어 DOM 이미지 중 실제 로드된 것만 골라 저장용 URL 목록을 만든다.
+# (사이트 측에서 일부 img 요청이 영원히 pending 인 경우가 있어, 미로드 장은 image_cnt 에서 제외)
+EXTRACT_VIEWER_LOADED_JS = """() => Array.from(document.querySelectorAll("div.vw-imgs img.viewer-ratio-img")).map((img) => ({
+    src: img.currentSrc || img.getAttribute("src") || img.getAttribute("data-src") || "",
+    alt: img.getAttribute("alt") || "",
+    complete: !!img.complete,
+    naturalWidth: img.naturalWidth || 0,
+    naturalHeight: img.naturalHeight || 0,
+}))"""
+
+FORCE_LOAD_IMG_JS = """async (urls) => {
+    // 동시 요청이 많으면 CDN 이 pending 으로 남는 경우가 있어 순차 로드
+    const loadOne = (url) => new Promise((resolve) => {
+        const img = new Image();
+        let settled = false;
+        const done = (ok) => {
+            if (settled) return;
+            settled = true;
+            resolve(ok);
+        };
+        img.onload = () => done(img.naturalWidth > 0);
+        img.onerror = () => done(false);
+        img.src = url;
+        setTimeout(() => done(img.complete && img.naturalWidth > 0), 4000);
+    });
+    let ok = 0;
+    for (const url of urls) {
+        if (await loadOne(url)) ok += 1;
+    }
+    return ok;
+}"""
+
+# 이미 뷰어에 그려진 img 를 canvas 로 뽑아 네트워크 재요청 없이 저장 (CORS taint 시 null)
+CANVAS_EXPORT_JS = """async (src) => {
+    const img = Array.from(document.querySelectorAll("div.vw-imgs img.viewer-ratio-img"))
+        .find((el) => (el.currentSrc || el.src) === src || (el.getAttribute("src") || "") === src);
+    if (!img || !img.naturalWidth) return null;
+    try {
+        const canvas = document.createElement("canvas");
+        canvas.width = img.naturalWidth;
+        canvas.height = img.naturalHeight;
+        const ctx = canvas.getContext("2d");
+        ctx.drawImage(img, 0, 0);
+        const dataUrl = canvas.toDataURL("image/jpeg", 0.92);
+        const m = /^data:image\\/\\w+;base64,(.+)$/.exec(dataUrl);
+        return m ? m[1] : null;
+    } catch (e) {
+        return null;
+    }
+}"""
+
+
+def force_capture_missing_images(page, urls: list[str], captured: dict[str, bytes]) -> int:
+    """스크롤로 못 받은 URL을 <img> 로 순차 강제 로드해 response 캡처를 보충합니다.
+
+    위장 확장자 URL은 APIRequest 가 JPEG가 아닌 실제 .js/.woff 를 받을 수 있어
+    브라우저 이미지 로더 경로가 더 안정적입니다.
+    """
+    missing = [url for url in urls if url not in captured]
+    if not missing:
+        return 0
+    try:
+        ok = page.evaluate(FORCE_LOAD_IMG_JS, missing)
+        page.wait_for_timeout(300)
+        print(f"  - 미수신 {len(missing)}장 순차 강제 로드 시도 (onload {ok}장)")
+    except Exception as e:  # noqa: BLE001
+        if _is_closed_error(e):
+            raise
+        print(f"  - 미수신 이미지 강제 로드 실패(다운로드는 진행): {e}")
+        return 0
+    filled = sum(1 for url in missing if url in captured)
+    if filled:
+        print(f"  - 강제 로드로 캡처 추가 {filled}장")
+    return filled
+
+
+def canvas_export_image(page, url: str) -> bytes | None:
+    """뷰어에 이미 로드된 이미지를 canvas→JPEG 로 추출합니다."""
+    try:
+        b64 = page.evaluate(CANVAS_EXPORT_JS, url)
+    except Exception:  # noqa: BLE001
+        return None
+    if not b64:
+        return None
+    body = base64.b64decode(b64)
+    return body if image_ext(body) else None
+
+
 def collect_episode_images(
     session: BrowserSession,
     toon_id: str,
@@ -787,20 +876,49 @@ def collect_episode_images(
             print("  - 뷰어 이미지 목록이 비어 있습니다.")
             return 0, []
 
+        force_capture_missing_images(page, urls, captured)
+
+        # 사이트에서 일부 img 가 영원히 pending(complete=false)인 경우가 있음 → 로드된 장만 수집 대상으로
+        loaded_items = page.evaluate(EXTRACT_VIEWER_LOADED_JS) or []
+        loaded_urls = []
+        pending = 0
+        for item in loaded_items:
+            src = item.get("src") or ""
+            if not src or src.startswith("data:"):
+                continue
+            full = urljoin(page.url, src)
+            if is_decoy_image_url(full):
+                continue
+            if int(item.get("naturalWidth") or 0) > 0:
+                loaded_urls.append(full)
+            else:
+                pending += 1
+        if pending:
+            print(f"  - 뷰어 미로드(pending/실패) {pending}장 → image_cnt 에서 제외 (로드 {len(loaded_urls)}장)")
+        if loaded_urls:
+            urls = loaded_urls
+        else:
+            print("  - 로드된 뷰어 이미지가 없어 전체 URL 목록으로 저장을 시도합니다.")
+
         target_dir = episode_dir(base_path, toon_id, episode["episode_no"])
         target_dir.mkdir(parents=True, exist_ok=True)
         width = max(3, len(str(len(urls))))
         saved: list[dict] = []
         cache_hits = 0
         refetched = 0
+        canvas_hits = 0
         for page_no, url in enumerate(urls, start=1):
             body = captured.get(url)
             if body:
                 cache_hits += 1
             else:
-                body = download_bytes(page, url, prefer_cache=True)
+                body = canvas_export_image(page, url)
                 if body:
-                    refetched += 1
+                    canvas_hits += 1
+                else:
+                    body = download_bytes(page, url, prefer_cache=True)
+                    if body:
+                        refetched += 1
             if not body:
                 print(f"  - [{page_no}/{len(urls)}] 저장 실패: {url}")
                 continue
@@ -814,7 +932,10 @@ def collect_episode_images(
                     "file_size": len(body),
                 }
             )
-        print(f"  - 저장 경로: 스크롤수신 {cache_hits}장 / 재요청 {refetched}장 / 실패 {len(urls) - len(saved)}장")
+        print(
+            f"  - 저장 경로: 스크롤수신 {cache_hits}장 / canvas {canvas_hits}장 / "
+            f"재요청 {refetched}장 / 실패 {len(urls) - len(saved)}장"
+        )
         return len(urls), saved
     finally:
         detach_capture()
