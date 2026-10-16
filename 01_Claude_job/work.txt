@@ -1,5 +1,13 @@
-db_toon_step.py 버전을  자동 스크롤 기능 이전으로 원복해줘
-
-현재 버전에서 제대로 이미지 저장이 되지 않는 이슈가 있음
 
 
+book_web_Crawler 프로젝트의  toki브라우저 경로 변경
+D:\book\.toki_browser
+-->
+D:\booktool\book\.toki_browser
+
+
+
+book_webtoon_Crawler 프로젝트의  toki브라우저 경로 변경
+D:\booktoon\.toki_browser
+-->
+D:\booktool\booktoon\.toki_browser

@@ -15,7 +15,7 @@ import time
 from pathlib import Path
 
 DEFAULT_BASE_PATH = Path("D:/booktoon")
-DEFAULT_USER_DATA_DIR = DEFAULT_BASE_PATH / ".toki_browser"
+DEFAULT_USER_DATA_DIR = Path("D:/booktool/booktoon/.toki_browser")
 CDP_CONNECT_TIMEOUT_SEC = 45
 CDP_PORT_FILE_NAME = "cdp_port.txt"
 BROWSER_ZOOM_PERCENT = 50  # .toki_browser 페이지 기본 확대/축소 비율(%)
