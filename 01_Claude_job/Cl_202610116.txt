@@ -1,0 +1,13 @@
+
+
+book_web_Crawler 프로젝트의  toki브라우저 경로 변경
+D:\book\.toki_browser
+-->
+D:\booktool\book\.toki_browser
+
+
+
+book_webtoon_Crawler 프로젝트의  toki브라우저 경로 변경
+D:\booktoon\.toki_browser
+-->
+D:\booktool\booktoon\.toki_browser
