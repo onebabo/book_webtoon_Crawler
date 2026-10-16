@@ -34,3 +34,86 @@ D:\mynas\도시정벌 1부(01~12)\도시정벌 02
 
 
 
+마이 북 프로젝트 
+
+toon_* 테이블 구조를 확인해서 my_toon_* 테이블 신규생성
+
+toon_info           --> my_toon_info            : 책기본정보
+toon_episode        --> my_toon_episode         : 에피소드 정보
+toon_episode_image  --> my_toon_episode_image   : 에피스도 이미지정보
+
+기존적인 웹툰을 서비스를 기준을    현재 컴퓨터에 보관중인 폴더/이미지를 분석해서  데이터베이스화 하는 프로그램개발
+
+python toon_create.py --TYPE  "" --bookid "" --name "도시정벌 1부" --path "D:\mynas\도시정벌 1부(01~12)" 
+
+
+
+
+TYPE : 1
+bookid  : 값이 없는 경우 신규 생성  (신규생성시 아이디는   현재날짜시간 YYYYMMDDHHMMSS)  : 자료형에 문제 없는지 확인필요
+
+아직은 추가 분석이 필요해서  TYPE : 1
+
+사전 작업 시작 전에  폴더 에대한 구조적인 분석이 필요
+보통을 아래와 같은 구조임
+D:\mynas\도시정벌 1부(01~12)\도시정벌 01
+  D:\mynas\도시정벌 1부(01~12)\도시정벌\도시정벌 01\001.jpg
+  D:\mynas\도시정벌 1부(01~12)\도시정벌\도시정벌 01\002.jpg
+   ...
+
+D:\mynas\도시정벌 1부(01~12)\도시정벌 02
+  D:\mynas\도시정벌 1부(01~12)\도시정벌 02\001.jpg
+  D:\mynas\도시정벌 1부(01~12)\도시정벌 02\002.jpg
+   ...
+
+D:\booktoon\{웹툰아이디} 에 폴더를만들고 해당 폴더에  기존형태로 복사하는 방식
+
+
+' 다른 폴더 작업시  폴더가 추가되면 별도로 TYPE을 추가해서 폴더구조분석하는 내용 기록
+
+* MYBOOK_CREATE.md 파일에 별도로 기록
+
+
+
+
+
+
+
+
+D:\booktoon\279\279_나 혼자만 레벨업.txt 와  정보파일 생성
+
+
+
+
+Try the new fullscreen renderer?
+
+  ·Flicker-free output
+  ·Mouse support — click to move your cursor or expand results
+  ·Selected text auto-copies to your clipboard
+
+  ❯ 1. Yes, try it
+    2. Not now
+
+  Enter to confirm ·Esc to cancel
+    이번 5부가 이 경우였습니다.
+  - 이미 만든 페이지는 건너뛰므로, 중간에 끊겨도 같은 명령으로 이어서 진행됩니다.
+
+  알아두실 점
+  - Pillow 대신 Windows 기본 기능 사용: 이 서버에서는 PyPI 접속이 안 돼서, 샌드박스 밖에서 시도해도 Pillow를 설치할
+    수 없었습니다. 그래서 이미지 자르기는 Windows에 기본으로 들어 있는 System.Drawing을 PowerShell로 불러서 합니다.
+    설치할 것이 없습니다.
+  - 용량 증가  자른 페이지를 JPEG(품질 92)로 다시 저장해서 5부는 원본 1.2GB가 1.8GB가 됐습니다. 품질을 낮추면
+    줄어들지만 화질도 떨어집니다.
+  - 35권: 원본에 이미지가 일부 빠진 상태는 그대로입니다.
+  - 6부: 가로 이미지가 14,940장이라 TYPE 2로 등록하면 될 것으로 보입니다. 아직 등록하지 않았습니다.
+  
+  MYBOOK_CREATE.md에 TYPE 2 규칙과 이번 등록 이력을 적었습니다. 커밋과 푸시는 아직 하지 않았습니다.
+
+
+
+  5부  도시정벌  썸네일 이미지 교체 
+D:\booktoon\cover\20261017000036.jpg
+
+
+
+D:\mynas\도시정벌 6부(완)   TYPE 2 규칙 등록해줘
