@@ -664,6 +664,59 @@ def copy_episode_images(ep: dict, dest_dir: Path) -> list[dict]:
 
 
 # ---------------------------------------------------------------------
+# 썸네일 (db_toon_step.py 와 같은 규칙: <기본경로>/cover/{id}.jpg)
+# ---------------------------------------------------------------------
+def cover_file_path(base_path: Path, my_toon_id: int) -> Path:
+    return base_path / "cover" / f"{my_toon_id}.jpg"
+
+
+def ensure_cover(base_path: Path, my_toon_id: int, toon_dir: Path) -> Path | None:
+    """썸네일이 없으면 첫 회차 첫 페이지로 만듭니다. 이미 있으면(직접 교체한 표지 등) 그대로 둡니다.
+    JPEG 가 아니면(PNG/GIF/BMP) System.Drawing 으로 JPEG 변환해 {id}.jpg 형식을 지킵니다."""
+    dest = cover_file_path(base_path, my_toon_id)
+    if dest.is_file():
+        return dest
+    episode_dirs = sorted(
+        (d for d in toon_dir.iterdir() if d.is_dir() and d.name.isdigit()), key=lambda d: int(d.name)
+    ) if toon_dir.is_dir() else []
+    first = next((imgs[0] for d in episode_dirs if (imgs := list_images(d))), None)
+    if first is None:
+        print("썸네일: 복사된 이미지가 없어 만들지 않았습니다.")
+        return None
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    if image_format(first) == "jpeg":
+        shutil.copyfile(first, dest)
+    else:
+        ps = (
+            "Add-Type -AssemblyName System.Drawing; "
+            "$img = [System.Drawing.Image]::FromFile($args[0]); "
+            "$bmp = New-Object System.Drawing.Bitmap $img.Width, $img.Height; "
+            "$g = [System.Drawing.Graphics]::FromImage($bmp); $g.Clear([System.Drawing.Color]::White); "
+            "$g.DrawImage($img, 0, 0, $img.Width, $img.Height); "
+            "$bmp.Save($args[1], [System.Drawing.Imaging.ImageFormat]::Jpeg); "
+            "$g.Dispose(); $bmp.Dispose(); $img.Dispose()"
+        )
+        quote = lambda p: "'" + str(p).replace("'", "''") + "'"  # noqa: E731  PowerShell 작은따옴표 문자열
+        result = subprocess.run(
+            ["powershell", "-NoProfile", "-Command", f"& {{ {ps} }} {quote(first)} {quote(dest)}"],
+            capture_output=True, text=True,
+        )
+        if result.returncode != 0 or not dest.is_file():
+            print(f"썸네일 JPEG 변환에 실패했습니다: {first} {result.stderr.strip()[:200]}")
+            return None
+    print(f"썸네일을 만들었습니다(첫 회차 첫 페이지): {dest.as_posix()} ← {first.as_posix()}")
+    return dest
+
+
+def update_my_toon_cover(cursor, my_toon_id: int, cover: Path) -> None:
+    """cover_path 가 비어 있을 때만 채웁니다 (직접 지정한 경로는 유지)."""
+    cursor.execute(
+        "UPDATE my_toon_info SET cover_path = COALESCE(cover_path, %s) WHERE my_toon_id = %s",
+        (cover.as_posix(), my_toon_id),
+    )
+
+
+# ---------------------------------------------------------------------
 # 정보 파일 (db_toon_step.py 의 {toon_id}_{제목}.txt 와 같은 형식)
 # ---------------------------------------------------------------------
 INVALID_FILENAME_RE = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
@@ -687,6 +740,7 @@ def write_info_file(toon_dir: Path, my_toon_id: int, title: str, src_type: int, 
         f"구조 TYPE : {src_type}",
         f"총 회차 : {len(episodes)}",
         f"총 이미지 : {total}",
+        f"썸네일 저장 : {cover_file_path(toon_dir.parent, my_toon_id).as_posix()}",
         f"이미지 저장 : {toon_dir.as_posix()}/<회차번호>/001.jpg ...",
         f"갱신일시 : {time.strftime('%Y-%m-%d %H:%M:%S')}",
         "",
@@ -800,6 +854,12 @@ def main() -> int:
             mark = "완료" if len(saved) == len(ep["pages"]) else "일부 실패"
             failed += len(saved) != len(ep["pages"])
             print(f"  - {ep['episode_no']}회 {mark}: {len(saved)}/{len(ep['pages'])}장 → {dest_dir.as_posix()}")
+
+        cover = ensure_cover(base_path, my_toon_id, toon_dir)
+        if cover:
+            with conn.cursor() as cursor:
+                update_my_toon_cover(cursor, my_toon_id, cover)
+            conn.commit()
 
     write_info_file(toon_dir, my_toon_id, args.name.strip(), src_type, root, episodes)
     print(f"마이 북 등록 끝: {my_toon_id} '{args.name.strip()}' ({len(episodes)}회차, 실패 회차 {failed})")

@@ -50,11 +50,18 @@ python toon_create.py --TYPE 1 --bookid 20261016093015 --name "도시정벌 1부
 
 ## 썸네일 (cover_path)
 
-`toon_create.py` 는 썸네일을 만들지 않습니다. 기존 웹툰과 같은 규칙 `D:/booktoon/cover/{my_toon_id}.jpg` 로 직접 저장하고
-`my_toon_info.cover_path` 를 갱신합니다 (다시 등록해도 `cover_path` 는 유지됨).
+기존 웹툰과 같은 규칙 `D:/booktoon/cover/{my_toon_id}.jpg` 에 저장하고 `my_toon_info.cover_path` 에 경로를 넣습니다.
+
+- `toon_create.py` 가 등록 끝에 **썸네일 파일이 없으면 첫 회차 첫 페이지**로 만듭니다 (PNG/GIF/BMP 는 JPEG 로 변환).
+- 파일이 이미 있으면(직접 교체한 표지 등) 건드리지 않고, `cover_path` 도 비어 있을 때만 채웁니다.
+- 다른 표지로 바꾸려면 `D:/booktoon/cover/{my_toon_id}.jpg` 파일만 교체하면 됩니다.
+- 2026-10-17 점검: 도시정벌 1·2·4·6·7·8·9부는 썸네일이 없어 첫 페이지(1권 표지)로 생성, 3·5부는 파일만 있고 `cover_path` 가 비어 있어 채움.
+
+직접 지정한 썸네일:
 
 | 아이디 | 제목 | 원본 |
 |---|---|---|
+| 20261017000036 | 도시정벌 5부 | 직접 교체 (3권 표지) |
 | 20261017043236 | 도시정벌 디퍼런스 1부 | `https://comicthumb-phinf.pstatic.net/20201208_192/pocket_1607410581843LhnD3_JPEG/__1_1500.jpg?type=m260` (175x250) |
 | 20261017043243 | 도시정벌 디퍼런스 2부 | 같은 이미지 |
 

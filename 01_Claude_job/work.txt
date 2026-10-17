@@ -11,9 +11,13 @@ D:\mynas\도시정벌 9부    등록해줘
 
 D:\mynas\도시정벌 디퍼런스 1부완
 D:\mynas\도시정벌 디퍼런스 2부
-    
+
 db_manhwa_step.py
 
 
 db_toon_step.py(웹툰)  을 활용해서  db_manhwa_step.py(만화) 새롭게 만들어줘
 
+
+
+마이웹툰의경우 썸네일 이미지  cover 폴더 저장하는 방식인지 점검후
+누락되었으면 변경작용
