@@ -11,7 +11,7 @@ D:\mynas\도시정벌 9부    등록해줘
 
 D:\mynas\도시정벌 디퍼런스 1부완
 D:\mynas\도시정벌 디퍼런스 2부
-
+    
 db_manhwa_step.py
 
 
