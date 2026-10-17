@@ -303,6 +303,18 @@ def to_int(value) -> int | None:
     return int(text) if text else None
 
 
+COUNT_UNITS = {"천": 1_000, "만": 10_000, "억": 100_000_000}
+
+
+def to_count(value) -> int | None:
+    """'2.0천' → 2000, '1.2만' → 12000, '8,245' → 8245. 사이트 요약 표기(천/만/억)를 수로 바꿉니다."""
+    text = str(value or "").replace(",", "").strip()
+    match = re.search(r"(\d+(?:\.\d+)?)\s*([천만억]?)", text)
+    if not match:
+        return None
+    return round(float(match.group(1)) * COUNT_UNITS.get(match.group(2), 1))
+
+
 def to_float(value) -> float | None:
     match = re.search(r"\d+(?:\.\d+)?", str(value or ""))
     return float(match.group(0)) if match else None
@@ -645,7 +657,7 @@ def build_manhwa_info(page_url: str, data: dict, manhwa_id: str, episodes: list[
         "platform": data.get("platform") or None,
         "description": data.get("description") or None,
         "rating": round(rating, 2) if rating is not None else None,
-        "bookmark_cnt": to_int(stats.get("북마크")),
+        "bookmark_cnt": to_count(stats.get("북마크")),
         "source_url": f"{urlparse(page_url).scheme}://{urlparse(page_url).netloc}/manhwa/{manhwa_id}",
     }
     categories = data.get("tags") or data.get("ldGenre") or []
@@ -725,6 +737,38 @@ def attach_image_response_capture(page) -> tuple[dict[str, bytes], Callable[[], 
     return captured, detach
 
 
+# PNG/WEBP/GIF 바이트를 브라우저 canvas 로 JPEG 변환 (Pillow 없이). 투명 영역은 흰 배경으로 채움.
+TO_JPEG_JS = """async (b64) => {
+    try {
+        const bytes = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
+        const bitmap = await createImageBitmap(new Blob([bytes]));
+        const canvas = document.createElement("canvas");
+        canvas.width = bitmap.width;
+        canvas.height = bitmap.height;
+        const ctx = canvas.getContext("2d");
+        ctx.fillStyle = "#ffffff";
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        ctx.drawImage(bitmap, 0, 0);
+        const m = /^data:image\\/jpeg;base64,(.+)$/.exec(canvas.toDataURL("image/jpeg", 0.92));
+        return m ? m[1] : null;
+    } catch (e) {
+        return null;
+    }
+}"""
+
+
+def to_jpeg(page, body: bytes) -> bytes | None:
+    """이미 JPEG 면 그대로, 아니면 브라우저 canvas 로 JPEG 변환. 실패하면 None."""
+    if image_ext(body) == "jpg":
+        return body
+    try:
+        b64 = page.evaluate(TO_JPEG_JS, base64.b64encode(body).decode("ascii"))
+    except Exception:  # noqa: BLE001
+        return None
+    converted = base64.b64decode(b64) if b64 else None
+    return converted if image_ext(converted) == "jpg" else None
+
+
 def save_cover(page, cover_url: str, dest: Path) -> tuple[str | None, str | None]:
     if not cover_url or cover_url.startswith("data:"):
         return None, None
@@ -732,6 +776,16 @@ def save_cover(page, cover_url: str, dest: Path) -> tuple[str | None, str | None
     if not body:
         print(f"섬네일 다운로드에 실패했습니다: {cover_url}")
         return cover_url, None
+    # 섬네일 파일명은 {id}.jpg 고정 → 사이트가 webp/png 로 주면 실제 JPEG 로 바꿔 저장
+    ext = image_ext(body)
+    if ext != "jpg":
+        converted = to_jpeg(page, body)
+        if converted:
+            print(f"섬네일 {ext} → jpg 변환")
+            body = converted
+        else:  # 변환 실패 시 확장자를 실제 형식에 맞춰 저장
+            print(f"섬네일 {ext} → jpg 변환에 실패해 .{ext} 로 저장합니다.")
+            dest = dest.with_suffix(f".{ext}")
     try:
         dest.parent.mkdir(parents=True, exist_ok=True)
         dest.write_bytes(body)
