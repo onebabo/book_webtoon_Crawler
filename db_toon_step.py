@@ -705,9 +705,15 @@ def download_bytes(page, url: str, *, prefer_cache: bool = False) -> bytes | Non
     return None
 
 
-def attach_image_response_capture(page) -> tuple[dict[str, bytes], Callable[[], None]]:
-    """뷰어 스크롤 중 <img> 네트워크 응답을 URL→bytes 로 모아 재다운로드를 피합니다."""
-    captured: dict[str, bytes] = {}
+def attach_image_response_capture(
+    page, captured: dict[str, bytes] | None = None,
+) -> tuple[dict[str, bytes], Callable[[], None]]:
+    """뷰어 스크롤 중 <img> 네트워크 응답을 URL→bytes 로 모아 재다운로드를 피합니다.
+
+    captured 를 넘기면 같은 dict 에 이어서 채웁니다(goto 중 탭이 바뀐 뒤 재부착용).
+    """
+    if captured is None:
+        captured = {}
 
     def on_response(response) -> None:
         try:
@@ -913,11 +919,17 @@ def collect_episode_images(
     timeout_ms: int,
 ) -> tuple[int, list[dict]]:
     """회차 뷰어를 열어 이미지를 <base>/{toon_id}/{episode_no}/NNN.ext 로 저장합니다."""
-    page = session.page
+    page = session.ensure_page()
     # goto·스크롤로 브라우저가 받는 응답을 가로채 재다운로드(APIRequest) 부담·ECONNRESET 을 줄임
     captured, detach_capture = attach_image_response_capture(page)
     try:
         session.goto(episode["org_url"], VIEWER_IMG_SELECTOR, timeout_ms, f"{episode['episode_no']}화 뷰어")
+        # goto 중 CF/프로필 복구로 탭이 바뀌면 예전 page 참조는 이미 닫혀 TargetClosedError 가 납니다.
+        live = session.ensure_page()
+        if live is not page:
+            detach_capture()
+            page = live
+            captured, detach_capture = attach_image_response_capture(page, captured)
         page.wait_for_timeout(800)
         scroll_viewer_to_bottom(page)
         items = page.evaluate(EXTRACT_VIEWER_JS) or []
@@ -1077,6 +1089,20 @@ def run_session(session: BrowserSession, args, toon_id: str, base_path: Path) ->
             print(f"  - 실패: {e}")
             fail += 1
             continue
+        except Exception as e:  # noqa: BLE001
+            if not _is_closed_error(e):
+                raise
+            # 탭만 닫힌 경우 한 번 더 붙잡아 재시도(전체 브라우저 종료면 ensure_page 가 ChallengeError)
+            print(f"  - 탭이 닫혀 재시도합니다: {e}")
+            try:
+                session.ensure_page()
+                image_cnt, saved = collect_episode_images(session, toon_id, ep, base_path, timeout_ms)
+            except ChallengeError:
+                raise
+            except Exception as e2:  # noqa: BLE001
+                print(f"  - 실패: {e2}")
+                fail += 1
+                continue
         image_dir = episode_dir(base_path, toon_id, ep["episode_no"]).as_posix()
         save_episode_images(toon_id, ep["episode_code"], image_dir, image_cnt, saved)
         if image_cnt and len(saved) >= image_cnt:
