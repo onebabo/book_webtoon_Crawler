@@ -4,6 +4,8 @@
 --   기준 샘플 : https://toki34.com/webtoon/847903  (회차 URL: /webtoon/847903/nv-847903-1)
 --   이미지 저장 : D:\booktoon\{toon_id}\{episode_no}\001.jpg ...
 --   섬네일 저장 : D:\booktoon\cover\{toon_id}.jpg
+--   toon_id     : 문자형 VARCHAR(50) (예: 847903, u-bt-ok_adultery-8ddc2430)
+--                 기존 BIGINT 테이블은 db.py 의 migrate_toon_id_to_varchar() 가 실행 시 자동 변환합니다.
 --
 --   ※ db.py 의 ensure_schema() 가 실행 시 이 파일을 그대로 읽어 실행합니다(DDL 단일 관리).
 --     '--' 주석 줄을 제거한 뒤 ';' 기준으로 나누므로, 구문 안에 ';' 문자를 넣지 마세요.
@@ -11,7 +13,7 @@
 
 -- 1. 웹툰 기본 정보 (실제로 수집을 진행/완료한 웹툰)
 CREATE TABLE IF NOT EXISTS toon_info (
-    toon_id         BIGINT          NOT NULL COMMENT '웹툰 아이디 (사이트 원본 ID, 예: 847903)',
+    toon_id         VARCHAR(50)     NOT NULL COMMENT '웹툰 아이디 (사이트 원본 ID 문자열, 예: 847903, u-bt-ok_adultery-8ddc2430)',
     title           VARCHAR(255)    NOT NULL COMMENT '제목',
     author          VARCHAR(255)    NULL COMMENT '작가 (여러 명이면 쉼표 구분)',
     total_episode   INT             NOT NULL DEFAULT 0 COMMENT '총 회차 수 (사이트 기준)',
@@ -33,7 +35,7 @@ CREATE TABLE IF NOT EXISTS toon_info (
 -- 2. 웹툰 태그/카테고리 (toon_info 1:N)
 CREATE TABLE IF NOT EXISTS toon_category (
     category_seq    BIGINT          NOT NULL AUTO_INCREMENT COMMENT '내부 PK',
-    toon_id         BIGINT          NOT NULL COMMENT '웹툰 아이디 (toon_info.toon_id)',
+    toon_id         VARCHAR(50)     NOT NULL COMMENT '웹툰 아이디 (toon_info.toon_id)',
     category_name   VARCHAR(50)     NOT NULL COMMENT '태그/카테고리 이름 (예: 완결웹툰)',
     use_yn          CHAR(1)         NOT NULL DEFAULT 'Y' COMMENT '사용 여부 Y/N',
     created_at      DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -49,7 +51,7 @@ CREATE TABLE IF NOT EXISTS toon_category (
 
 -- 3. 웹툰 수집 대상 마스터 목록 (book_work_list 대응) - 수집 진행 상태 관리
 CREATE TABLE IF NOT EXISTS toon_work_list (
-    toon_id             BIGINT          NOT NULL COMMENT '웹툰 아이디 (사이트 원본 ID)',
+    toon_id             VARCHAR(50)     NOT NULL COMMENT '웹툰 아이디 (사이트 원본 ID)',
     title               VARCHAR(255)    NOT NULL COMMENT '제목',
     author              VARCHAR(255)    NULL COMMENT '작가',
     total_episode       INT             NOT NULL DEFAULT 0 COMMENT '총 회차 수 (사이트 기준)',
@@ -88,7 +90,7 @@ CREATE TABLE IF NOT EXISTS toon_work_list (
 --    has_images   : 이미지 수(image_cnt) 만큼 모두 저장되었으면 1
 CREATE TABLE IF NOT EXISTS toon_episode (
     episode_seq     BIGINT          NOT NULL AUTO_INCREMENT COMMENT '내부 PK',
-    toon_id         BIGINT          NOT NULL COMMENT '웹툰 아이디 (toon_info.toon_id)',
+    toon_id         VARCHAR(50)     NOT NULL COMMENT '웹툰 아이디 (toon_info.toon_id)',
     episode_code    VARCHAR(100)    NOT NULL COMMENT '사이트 회차 코드 (예: nv-847903-33)',
     episode_no      INT             NOT NULL COMMENT '회차 번호 (저장 폴더명)',
     episode_type    VARCHAR(10)     NOT NULL DEFAULT 'MAIN' COMMENT '회차 구분 (MAIN:본편, SIDE:외전/후기 등)',
@@ -118,7 +120,7 @@ CREATE TABLE IF NOT EXISTS toon_episode (
 --    org_url 은 사이트가 매번 새로 발급하는 위장 URL(.json/.woff2/.js 확장자, 실제는 JPEG)이라 참고용입니다.
 CREATE TABLE IF NOT EXISTS toon_episode_image (
     image_seq       BIGINT          NOT NULL AUTO_INCREMENT COMMENT '내부 PK',
-    toon_id         BIGINT          NOT NULL COMMENT '웹툰 아이디',
+    toon_id         VARCHAR(50)     NOT NULL COMMENT '웹툰 아이디',
     episode_code    VARCHAR(100)    NOT NULL COMMENT '회차 코드 (toon_episode.episode_code)',
     page_no         INT             NOT NULL COMMENT '이미지 순번 (1부터)',
     org_url         VARCHAR(1000)   NULL COMMENT '원본 이미지 URL (수집 시점)',
@@ -136,7 +138,7 @@ CREATE TABLE IF NOT EXISTS toon_episode_image (
 
 -- 6. 웹툰 수집 보류 (book_edit_holds 대응)
 CREATE TABLE IF NOT EXISTS toon_edit_holds (
-    toon_id             BIGINT          NOT NULL COMMENT '웹툰 아이디',
+    toon_id             VARCHAR(50)     NOT NULL COMMENT '웹툰 아이디',
     title               VARCHAR(255)    NOT NULL COMMENT '웹툰 제목',
     total_episode       INT             NOT NULL DEFAULT 0 COMMENT '총 회차수',
     collect_episode_cnt INT             NOT NULL DEFAULT 0 COMMENT '수집완료 회차수',

@@ -59,8 +59,9 @@ VIEWER_SCROLL_MAX_JUMP = 1500  # 한 스텝 최대 이동(px) — 너무 크면 
 # 스크롤 중 응답을 캐시하지만, 미완료 장이 있으면 강제 로드로 보충하므로 여유 있게 대기
 VIEWER_LOAD_WAIT_MS = 8000  # 스크롤 후 이미지 로딩 완료 대기 상한(ms)
 
-TOON_ID_RE = re.compile(r"/webtoon/(\d+)(?:/|$)")
-EPISODE_URL_RE = re.compile(r"/webtoon/(\d+)/([^/?#]+)/?$")  # 회차(뷰어) URL
+TOON_ID_RE = re.compile(r"/webtoon/([\w-]+)(?:/|$)")  # 숫자·문자형 ID (예: 847903, u-bt-ok_adultery-8ddc2430)
+TOON_ID_MAX_LEN = 50  # DB toon_id VARCHAR(50)
+EPISODE_URL_RE = re.compile(r"/webtoon/([\w-]+)/([^/?#]+)/?$")  # 회차(뷰어) URL
 EPISODE_NO_RE = re.compile(r"-(\d+)$")
 
 STEALTH_ARGS = ["--disable-blink-features=AutomationControlled"]
@@ -218,7 +219,10 @@ def toon_id_from_url(url: str) -> str:
     match = TOON_ID_RE.search(urlparse(url).path)
     if not match:
         raise ValueError(f"웹툰 ID를 URL에서 찾을 수 없습니다: {url}")
-    return match.group(1)
+    toon_id = match.group(1)
+    if len(toon_id) > TOON_ID_MAX_LEN:
+        raise ValueError(f"웹툰 ID가 {TOON_ID_MAX_LEN}자를 넘습니다({len(toon_id)}자): {toon_id}")
+    return toon_id
 
 
 def split_episode_url(url: str) -> tuple[str, str | None]:
@@ -644,7 +648,7 @@ def build_toon_info(page_url: str, data: dict, toon_id: str, episodes: list[dict
     rating = to_float(data.get("ldRating")) or to_float(stats.get("평점"))
     authors = data.get("authors") or ([data["ldAuthor"]] if data.get("ldAuthor") else [])
     info = {
-        "toon_id": int(toon_id),
+        "toon_id": toon_id,
         "title": data.get("title") or f"webtoon_{toon_id}",
         "author": ", ".join(authors) or None,
         "total_episode": total,
@@ -1054,7 +1058,7 @@ def run_session(session: BrowserSession, args, toon_id: str, base_path: Path) ->
         print("--createonly Y: 회차 이미지 수집은 생략합니다.")
         return {"targets": 0, "ok": 0, "fail": 0}
 
-    status = fetch_episode_status(int(toon_id))
+    status = fetch_episode_status(toon_id)
     targets = select_target_episodes(
         episodes, status, base_path, toon_id, parse_episode_spec(args.episode), args.num, args.force,
         args.episode_code,
@@ -1074,7 +1078,7 @@ def run_session(session: BrowserSession, args, toon_id: str, base_path: Path) ->
             fail += 1
             continue
         image_dir = episode_dir(base_path, toon_id, ep["episode_no"]).as_posix()
-        save_episode_images(int(toon_id), ep["episode_code"], image_dir, image_cnt, saved)
+        save_episode_images(toon_id, ep["episode_code"], image_dir, image_cnt, saved)
         if image_cnt and len(saved) >= image_cnt:
             ok += 1
             print(f"  - 저장 완료: {len(saved)}장 → {image_dir}")
@@ -1131,7 +1135,7 @@ def run(args) -> int:
                 print(e)
                 return 1
 
-    status = fetch_work_list_status(int(toon_id)) or {}
+    status = fetch_work_list_status(toon_id) or {}
     print(
         f"완료: 대상 {result['targets']}회차 / 성공 {result['ok']} / 실패 {result['fail']} | "
         f"toon_work_list collect_yn={status.get('collect_yn')} "
@@ -1145,7 +1149,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="웹툰 1건 정보/회차 이미지 수집 (toki webtoon)")
     parser.add_argument(
         "url", nargs="?", default=DEFAULT_URL,
-        help="웹툰 목록 URL (예: https://toki34.com/webtoon/847903) 또는 회차 URL(…/webtoon/4583/1057871: 그 회차만 수집)",
+        help="웹툰 목록 URL (예: https://toki34.com/webtoon/847903, …/webtoon/u-bt-ok_adultery-8ddc2430) 또는 회차 URL(…/webtoon/4583/1057871: 그 회차만 수집)",
     )
     parser.add_argument("-o", "--output", default=str(DEFAULT_BASE_PATH), help="저장 루트 경로 (기본 D:/booktoon)")
     parser.add_argument("--createonly", default="N", help="Y: 작품정보/회차목록/섬네일/DB까지만, 이미지 수집 생략")

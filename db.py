@@ -72,11 +72,57 @@ def schema_statements(path: Path = SCHEMA_SQL) -> list[str]:
     return [stmt.strip() for stmt in "\n".join(lines).split(";") if stmt.strip()]
 
 
+TOON_ID_TABLES = (  # toon_id 컬럼을 가진 웹툰 테이블
+    "toon_info", "toon_category", "toon_work_list",
+    "toon_episode", "toon_episode_image", "toon_edit_holds",
+)
+TOON_CATEGORY_FK = "fk_toon_category_toon"
+
+
+def migrate_toon_id_to_varchar(cursor) -> None:
+    """기존 BIGINT toon_id 컬럼을 VARCHAR(50) 으로 변환합니다(기존 숫자 값은 그대로 문자열이 됨)."""
+    placeholders = ", ".join(["%s"] * len(TOON_ID_TABLES))
+    cursor.execute(
+        f"""
+        SELECT TABLE_NAME, COLUMN_COMMENT FROM information_schema.COLUMNS
+         WHERE TABLE_SCHEMA = DATABASE() AND COLUMN_NAME = 'toon_id'
+           AND DATA_TYPE <> 'varchar' AND TABLE_NAME IN ({placeholders})
+        """,
+        TOON_ID_TABLES,
+    )
+    targets = cursor.fetchall()
+    fk_sql = """
+        SELECT 1 FROM information_schema.TABLE_CONSTRAINTS
+         WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'toon_category'
+           AND CONSTRAINT_NAME = %s AND CONSTRAINT_TYPE = 'FOREIGN KEY'
+    """
+    if targets:
+        # FK 로 묶인 toon_category ↔ toon_info 는 자료형을 따로 바꿀 수 없어 FK 를 잠시 제거
+        cursor.execute(fk_sql, (TOON_CATEGORY_FK,))
+        if cursor.fetchone():
+            cursor.execute(f"ALTER TABLE toon_category DROP FOREIGN KEY {TOON_CATEGORY_FK}")
+        for table, comment in targets:
+            print(f"DB 변환: {table}.toon_id BIGINT → VARCHAR(50)")
+            cursor.execute(
+                f"ALTER TABLE {table} MODIFY toon_id VARCHAR(50) NOT NULL COMMENT %s",
+                (comment or "웹툰 아이디",),
+            )
+    cursor.execute(fk_sql, (TOON_CATEGORY_FK,))
+    if not cursor.fetchone():  # 변환 직후 또는 이전 변환이 중간에 끊긴 경우 FK 복구
+        cursor.execute(
+            f"""
+            ALTER TABLE toon_category ADD CONSTRAINT {TOON_CATEGORY_FK} FOREIGN KEY (toon_id)
+                REFERENCES toon_info (toon_id) ON DELETE CASCADE
+            """
+        )
+
+
 def ensure_schema(conn) -> None:
     with conn.cursor() as cursor:
         cursor.execute("SET NAMES utf8mb4")
         for stmt in schema_statements():
             cursor.execute(stmt)
+        migrate_toon_id_to_varchar(cursor)
 
 
 _schema_checked = False  # 프로세스당 1회만 스키마 보정
@@ -167,7 +213,7 @@ def upsert_toon_info(conn, info: dict) -> None:
         )
 
 
-def upsert_toon_categories(conn, toon_id: int, category_names: list[str]) -> None:
+def upsert_toon_categories(conn, toon_id: str, category_names: list[str]) -> None:
     names = normalize_categories(category_names)
     with conn.cursor() as cursor:
         if names:
@@ -191,7 +237,7 @@ def upsert_toon_categories(conn, toon_id: int, category_names: list[str]) -> Non
             cursor.execute("UPDATE toon_category SET use_yn = 'N' WHERE toon_id = %s", (toon_id,))
 
 
-def upsert_toon_episode_rows(conn, toon_id: int, episodes: list[dict]) -> None:
+def upsert_toon_episode_rows(conn, toon_id: str, episodes: list[dict]) -> None:
     """목록 페이지 기준 회차 메타정보만 갱신합니다. 이미지 수집 컬럼은 건드리지 않습니다."""
     sql = """
         INSERT INTO toon_episode (
@@ -240,7 +286,7 @@ def save_toon_basic(info: dict, category_names: list[str], episodes: list[dict])
             sync_work_list(cursor, info["toon_id"], mark_started=False)
 
 
-def fetch_episode_status(toon_id: int) -> dict[str, dict]:
+def fetch_episode_status(toon_id: str) -> dict[str, dict]:
     """episode_code -> {episode_no, image_cnt, saved_image_cnt, has_images, image_dir}."""
     sql = """
         SELECT episode_code, episode_no, image_cnt, saved_image_cnt, has_images, image_dir
@@ -263,7 +309,7 @@ def fetch_episode_status(toon_id: int) -> dict[str, dict]:
 
 
 def save_episode_images(
-    toon_id: int,
+    toon_id: str,
     episode_code: str,
     image_dir: str,
     image_cnt: int,
@@ -375,7 +421,7 @@ UPDATE toon_work_list
 """
 
 
-def sync_work_list(cursor, toon_id: int, mark_started: bool = False) -> None:
+def sync_work_list(cursor, toon_id: str, mark_started: bool = False) -> None:
     """toon_info/toon_episode 집계를 toon_work_list 에 반영하고 수집 상태(collect_yn)를 다시 계산합니다."""
     cursor.execute(INSERT_MISSING_WORK_LIST_SQL, (toon_id,))
     cursor.execute(SYNC_WORK_LIST_SQL, (get_local_ip() or None, toon_id))
@@ -383,7 +429,7 @@ def sync_work_list(cursor, toon_id: int, mark_started: bool = False) -> None:
     cursor.execute(APPLY_COLLECT_STATUS_SQL, (flag, flag, toon_id))
 
 
-def fetch_work_list_status(toon_id: int) -> dict | None:
+def fetch_work_list_status(toon_id: str) -> dict | None:
     with get_connection() as conn:
         with conn.cursor(pymysql.cursors.DictCursor) as cursor:
             cursor.execute(

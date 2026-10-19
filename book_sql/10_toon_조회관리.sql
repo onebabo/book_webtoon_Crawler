@@ -2,7 +2,7 @@
 -- book_webtoon_Crawler : 웹툰(toon) 테이블 조회/관리 SQL (수동 실행용)
 -- =====================================================================
 
-SET @toon_id = 847903;
+SET @toon_id = '847903';  -- 문자형 (예: 'u-bt-ok_adultery-8ddc2430')
 
 -- 1. 웹툰 1건 기본정보 / 수집현황
 SELECT * FROM toon_info      WHERE toon_id = @toon_id;
