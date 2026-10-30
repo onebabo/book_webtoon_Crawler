@@ -20,3 +20,6 @@ nouse/
 *.png
 saved_page*.html
 =4.12.0
+
+# 정보갱신 완결 목록 캐시 (db_toon_refresh.py)
+_refresh_cache/
