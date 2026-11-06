@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import random
 import re
 import subprocess
 import sys
@@ -230,6 +231,7 @@ def refresh_episodes(
     headed: bool,
     job_timeout: float,
     dry_run: bool,
+    gap: float = 30.0,
 ) -> tuple[int, list[str]]:
     """작품마다 db_toon_step.py / db_manhwa_step.py --createonly Y 실행 → (성공 수, 실패 ID 목록)"""
     cfg = KINDS[kind]
@@ -237,6 +239,9 @@ def refresh_episodes(
     failed: list[str] = []
     for index, target in enumerate(targets, start=1):
         url = f"{domain}/{cfg['segment']}/{target['id']}"
+        # 2026-11: 작품마다 쉬지 않고 사이트에 접속하면 차단된다 — 작품 사이 gap 초(±30%) 대기
+        if index > 1 and not dry_run and gap > 0:
+            time.sleep(gap * random.uniform(0.7, 1.3))
         cmd = [sys.executable, cfg["script"], url, "--createonly", "Y"]
         if headed:
             cmd.append("--headed")
@@ -310,7 +315,9 @@ def refresh_kind(kind: str, args: argparse.Namespace) -> None:
         )
 
     if not args.end_only:
-        ok, failed = refresh_episodes(kind, targets, args.domain, args.headed, args.job_timeout, args.dry_run)
+        ok, failed = refresh_episodes(
+            kind, targets, args.domain, args.headed, args.job_timeout, args.dry_run, args.gap
+        )
         if not args.dry_run:
             print(f"\n{cfg['label']} 회차 정보 갱신: 성공 {ok}편, 실패 {len(failed)}편")
             if failed:
@@ -337,6 +344,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--rescan", action="store_true", help="완결 목록 캐시를 버리고 1페이지부터 다시 받기")
     parser.add_argument("--timeout", type=float, default=30, help="완결 목록 페이지 요청 제한(초)")
     parser.add_argument("--job-timeout", type=float, default=1800, help="작품 1건 회차 정보 갱신 제한(초)")
+    parser.add_argument("--gap", type=float, default=30.0, help="작품 사이 대기(초, ±30%%, 기본 30 — 짧으면 사이트 차단)")
     parser.add_argument("--dry-run", action="store_true", help="DB 저장·크롤러 실행 없이 결과만 출력")
     args = parser.parse_args()
     args.skip_end = not args.end_scan
