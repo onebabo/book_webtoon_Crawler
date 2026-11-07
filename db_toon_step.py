@@ -33,6 +33,7 @@ from db import (
     load_mysql_config,
     save_episode_images,
     save_toon_basic,
+    update_toon_refresh_info,
 )
 from toki_chrome_cdp import (
     DEFAULT_USER_DATA_DIR,
@@ -74,6 +75,13 @@ STEALTH_INIT_JS = """
 Object.defineProperty(navigator, "webdriver", { get: () => undefined });
 """
 # Cloudflare Turnstile / 봇 확인 페이지 감지
+# Cloudflare "Access denied"(Block reason NGINX_CIDR_REALIP 등) — IP 대역 차단 화면. 기다리거나 다시 열면 차단이 길어진다
+SITE_BLOCKED_JS = """() => {
+    const text = ((document.title || "") + " " + (document.body && document.body.innerText || "")).slice(0, 4000);
+    return /Access denied/i.test(text) && /blocked by site security policy|Block reason|NGINX_CIDR/i.test(text);
+}"""
+EXIT_LOAD_FAILED = 4  # 목록 로딩 실패 · 정보 재수집에서 제목/총 회차를 못 읽음 — DB 미갱신
+EXIT_SITE_BLOCKED = 5  # 원본 사이트가 이 IP 를 차단 중 — 웹·일괄 갱신은 수집을 멈춘다
 CF_CHALLENGE_JS = """() => {
     const text = ((document.title || "") + " " + (document.body && document.body.innerText || "")).slice(0, 4000);
     if (/보안 확인|사람인지 확인|Verify you are human|Just a moment|Checking your browser|cf-browser-verification/i.test(text)) {
@@ -206,6 +214,21 @@ BROWSER_FETCH_JS = """async (url) => {
         return { ok: false, status: 0, b64: "", error: String(e) };
     }
 }"""
+
+
+class SiteBlockedError(RuntimeError):
+    """원본 사이트의 IP 차단 화면(Access denied) — headless → CDP 재시도도 하지 않는다."""
+
+
+class RefreshReadError(RuntimeError):
+    """정보 재수집: 첫 화면에서 제목·총 회차를 읽지 못함 — DB 미갱신."""
+
+
+def is_site_blocked(page) -> bool:
+    try:
+        return bool(page.evaluate(SITE_BLOCKED_JS))
+    except Exception:
+        return False
 
 
 class ChallengeError(RuntimeError):
@@ -411,6 +434,8 @@ def wait_selector_or_challenge(session, selector: str, timeout_ms: int, what: st
         try:
             if page.query_selector(selector):
                 return
+            if is_site_blocked(page):
+                raise SiteBlockedError(f"{what}: 원본 사이트가 이 IP 를 차단했습니다 (Cloudflare Access denied).")
             if is_cf_challenge(page):
                 if headless:
                     raise ChallengeError(f"{what}: Cloudflare 보안 확인(Turnstile)에 막혔습니다.")
@@ -428,7 +453,7 @@ def wait_selector_or_challenge(session, selector: str, timeout_ms: int, what: st
             return
         except PlaywrightTimeoutError:
             continue
-        except ChallengeError:
+        except (ChallengeError, SiteBlockedError):
             raise
         except Exception as e:
             text = str(e).lower()
@@ -1035,6 +1060,34 @@ def select_target_episodes(
     return targets[:num] if num else targets
 
 
+def save_refresh_info(page, data: dict, expected: int | None, toon_id: str) -> dict:
+    """--refresh(정보 재수집, 작품 1개): 목록 첫 화면에서 읽은 연재 상태·총 회차 두 가지만 DB 에 반영합니다.
+
+    스크롤 로딩·?epage=N 페이지 넘김·섬네일·정보 파일 없이 첫 화면 1번만 읽고, 제목·소개·카테고리·표지·회차 행·collect_ip 는
+    건드리지 않습니다 (update_toon_refresh_info). 여러 페이지인 작품의 총 회차는 DB 에 있던 회차 + 첫 화면의 새 회차로 센다
+    (빠진 번호 보정이 전체 목록 기준이라 첫 화면만으로는 못 쓴다). 상태를 못 읽으면 기존 상태 유지.
+    """
+    if not data.get("title") or not expected:
+        raise RefreshReadError("화면에서 제목·총 회차를 읽지 못해 DB 를 갱신하지 않습니다 (화면 구조 변경 확인).")
+    list_url = page.url
+    episodes = build_episode_rows(list_url, data, toon_id)
+    info, _categories = build_toon_info(list_url, data, toon_id, episodes)
+    total = info["total_episode"]
+    last_page = to_int(page.evaluate(EPISODE_PAGER_JS)) or 1
+    if last_page > 1:
+        known = {str(code) for code in fetch_episode_status(toon_id)}
+        total = len(known) + sum(1 for ep in episodes if str(ep["episode_code"]) not in known)
+    status = (data.get("status") or "").strip() or None
+    result = update_toon_refresh_info(toon_id, status, total)
+    if result is None:
+        raise RefreshReadError(f"웹툰 정보가 DB 에 없어 갱신하지 않습니다: {toon_id}")
+    (old_status, old_total), (new_status, new_total) = result["before"], result["after"]
+    keep = "" if status else " (화면에서 상태를 못 읽어 기존 값 유지)"
+    print(f"정보 재수집 [{toon_id}] {data.get('title')}: 상태 {old_status or '-'} → {new_status or '-'}{keep}, "
+          f"총 회차 {old_total} → {new_total} (화면 총 회차 {expected}, 페이지 넘김·섬네일 요청 없음, 다른 정보는 그대로)")
+    return {"targets": 0, "ok": 0, "fail": 0}
+
+
 def run_session(session: BrowserSession, args, toon_id: str, base_path: Path) -> dict:
     timeout_ms = int(args.timeout * 1000)
     session.goto(args.url, LIST_READY_SELECTOR, timeout_ms, "웹툰 목록")
@@ -1045,6 +1098,8 @@ def run_session(session: BrowserSession, args, toon_id: str, base_path: Path) ->
         print("회차 목록(li.ep-row-v2)을 찾지 못했습니다. 작품 정보만 저장합니다.")
     data = page.evaluate(EXTRACT_LIST_JS) or {}
     expected = to_int((data.get("stats") or {}).get("총 회차"))
+    if args.refresh:
+        return save_refresh_info(page, data, expected, toon_id)
     if expected and len(data.get("episodes") or []) < expected:
         load_all_episode_rows(page, expected)
         data = page.evaluate(EXTRACT_LIST_JS) or {}
@@ -1145,21 +1200,34 @@ def run(args) -> int:
         print(f"열려 있던 .toki_browser Chrome {closed}개 종료: {profile_dir}")
     result = None
     with sync_playwright() as playwright:
-        if not args.headed:
+        # 정보 재수집(--refresh)은 headless(위장 UA) 1차 접근 없이 바로 일반 Chrome — 바로 재수집과 같은 방식
+        if not args.headed and not args.refresh:
             try:
                 print(f"1차 접근(.toki_browser headless): {profile_dir}")
                 with BrowserSession(playwright, profile_dir, headless=True) as session:
                     result = run_session(session, args, toon_id, base_path)
+            except SiteBlockedError as e:
+                print(e)
+                return EXIT_SITE_BLOCKED
             except ChallengeError as e:
                 print(f"headless 접근이 정상적이지 않습니다: {e}")
                 print("일반 Chrome 창을 열어 보안 확인 후 이어서 진행합니다(저장된 회차는 건너뜀).")
         if result is None:
             try:
-                with BrowserSession(playwright, profile_dir, headless=False, start_url=args.url) as session:
+                # 정보 재수집은 빈 탭으로 띄운 뒤 goto 로 작품 페이지를 정확히 1번만 연다
+                start_url = None if args.refresh else args.url
+                with BrowserSession(playwright, profile_dir, headless=False, start_url=start_url) as session:
                     result = run_session(session, args, toon_id, base_path)
+            except SiteBlockedError as e:
+                print(e)
+                print("차단 중에는 다시 열수록 차단이 길어집니다. 원본이 브라우저에서 정상으로 열릴 때까지 수집을 멈추세요.")
+                return EXIT_SITE_BLOCKED
+            except RefreshReadError as e:
+                print(e)
+                return EXIT_LOAD_FAILED
             except ChallengeError as e:
                 print(e)
-                return 1
+                return EXIT_LOAD_FAILED
 
     status = fetch_work_list_status(toon_id) or {}
     print(
@@ -1182,6 +1250,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--num", type=int, default=None, help="이번 실행에서 수집할 최대 회차 수 (미지정: 전체)")
     parser.add_argument("--episode", default=None, help="특정 회차 번호만 수집 (예: 1,3,5-10)")
     parser.add_argument("--force", action="store_true", help="이미 수집된 회차도 다시 저장")
+    parser.add_argument(
+        "--refresh", action="store_true",
+        help="정보 재수집: 일반 Chrome 으로 목록 첫 화면 1번만 열어 상태·총 회차만 DB 반영 (스크롤·페이지 넘김·섬네일 없음). 차단 화면이면 종료 코드 5",
+    )
     parser.add_argument("--headed", action="store_true", help="처음부터 일반 Chrome(CDP) 창으로 진행")
     parser.add_argument("--profile", default=None, help=f"브라우저 프로필 경로 (기본 {DEFAULT_USER_DATA_DIR})")
     parser.add_argument("--timeout", type=float, default=90, help="페이지 로딩 대기(초)")

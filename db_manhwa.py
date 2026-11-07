@@ -329,6 +329,31 @@ def sync_work_list(cursor, manhwa_id: int, mark_started: bool = False) -> None:
     cursor.execute(APPLY_COLLECT_STATUS_SQL, (flag, flag, manhwa_id))
 
 
+def update_manhwa_refresh_info(work_id, status: str | None, total: int) -> dict | None:
+    """정보 재수집(웹 [정보 재수집] 버튼 · 작품 1개): 연재 상태·총 회차 두 가지만 갱신합니다.
+
+    manhwa_info·manhwa_work_list 의 status·total_episode 만 바꾸고, 바뀐 총 회차로 이 작품의 수집 현황(collect_yn)만 다시 계산합니다.
+    제목·소개·카테고리·표지·회차 행·collect_ip 는 건드리지 않습니다. status 가 None(화면에서 못 읽음)이면 상태는 그대로 둡니다.
+    반환: {"before": (상태, 총 회차), "after": (상태, 총 회차)} — 만화이 없으면 None
+    """
+    with get_connection() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute("SELECT status, total_episode FROM manhwa_info WHERE manhwa_id = %s", (work_id,))
+            found = cursor.fetchone()
+            if not found:
+                return None
+            before = (found[0] or "", int(found[1] or 0))
+            new_status = status or before[0]
+            cursor.execute(
+                "UPDATE manhwa_info SET status = %s, total_episode = %s WHERE manhwa_id = %s", (new_status, total, work_id)
+            )
+            cursor.execute(
+                "UPDATE manhwa_work_list SET status = %s, total_episode = %s WHERE manhwa_id = %s", (new_status, total, work_id)
+            )
+            cursor.execute(APPLY_COLLECT_STATUS_SQL, (0, 0, work_id))
+    return {"before": before, "after": (new_status, total)}
+
+
 def fetch_work_list_status(manhwa_id: int) -> dict | None:
     with get_connection() as conn:
         with conn.cursor(pymysql.cursors.DictCursor) as cursor:

@@ -8,8 +8,11 @@
    ※ 빠르게 연속 요청하면 Cloudflare 가 IP 를 차단(403)합니다. 그래서 페이지 사이를 --delay(기본 3초) 만큼 쉬고,
      403 이면 바로 멈춘 뒤 받은 페이지까지 캐시(_refresh_cache/{kind}_end.json)에 남겨 다음 실행에서 이어 받습니다.
      처음부터 다시: --rescan
-2) 회차 정보: 작품마다 `db_toon_step.py "{도메인}/webtoon/{ID}" --createonly Y` (만화: db_manhwa_step.py)
-   를 순서대로 실행해 총 회차·회차 목록·수집 현황을 다시 가져옵니다. (이미지 수집은 하지 않음)
+2) 회차 정보: 작품마다 `db_toon_step.py "{도메인}/webtoon/{ID}" --refresh` (만화: db_manhwa_step.py)
+   를 순서대로 실행해 상태·총 회차·수집 현황을 다시 가져옵니다. (이미지 수집은 하지 않음)
+   2026-11: 정보 갱신이 원본 IP 대역 차단(NGINX_CIDR_REALIP)을 반복해 일으켜 --refresh 로 바꿨습니다 —
+   일반 Chrome 으로 목록 첫 화면 1번만 열고 스크롤·페이지 넘김·섬네일 요청을 하지 않습니다. 작품 사이 --gap(기본 180초),
+   차단 화면(종료 코드 5)·로딩 실패(4)·시간 초과면 남은 작품(웹툰·만화 모두)을 건너뛰고 멈춥니다.
 
 - 강제완결(end_state='강제완결', 웹 상세에서 관리자가 지정) 작품은 대상에서 뺍니다.
 - 수집 상태(수집완료/수집필요/보류중)는 웹이 총 회차·수집 회차·보류(H)로 계산하므로 따로 저장하지 않습니다.
@@ -224,6 +227,13 @@ def save_end_states(kind: str, rows: list[tuple[str, str]], dry_run: bool) -> in
             ) or 0
 
 
+# db_toon_step.py / db_manhwa_step.py: 4 로딩 실패 · 5 차단 화면 — 계속 접속하면 차단이 길어지므로 전체 중단
+STOP_EXIT_CODES = {
+    4: "목록 화면을 읽지 못했습니다(보안 확인·로딩 실패)",
+    5: "원본 사이트가 이 IP 를 차단했습니다(Access denied)",
+}
+
+
 def refresh_episodes(
     kind: str,
     targets: list[dict],
@@ -231,9 +241,10 @@ def refresh_episodes(
     headed: bool,
     job_timeout: float,
     dry_run: bool,
-    gap: float = 30.0,
-) -> tuple[int, list[str]]:
-    """작품마다 db_toon_step.py / db_manhwa_step.py --createonly Y 실행 → (성공 수, 실패 ID 목록)"""
+    gap: float = 180.0,
+) -> tuple[int, list[str], bool]:
+    """작품마다 db_toon_step.py / db_manhwa_step.py --refresh 실행 → (성공 수, 실패 ID 목록, 차단 등으로 멈춤).
+    headed 는 예전 옵션 호환용(무시)."""
     cfg = KINDS[kind]
     ok = 0
     failed: list[str] = []
@@ -242,9 +253,8 @@ def refresh_episodes(
         # 2026-11: 작품마다 쉬지 않고 사이트에 접속하면 차단된다 — 작품 사이 gap 초(±30%) 대기
         if index > 1 and not dry_run and gap > 0:
             time.sleep(gap * random.uniform(0.7, 1.3))
-        cmd = [sys.executable, cfg["script"], url, "--createonly", "Y"]
-        if headed:
-            cmd.append("--headed")
+        # --refresh 는 항상 일반 Chrome(바로 재수집과 같은 방식) — headless·위장 UA 로 접속하지 않는다
+        cmd = [sys.executable, cfg["script"], url, "--refresh"]
         print(f"\n[{cfg['label']} {index}/{len(targets)}] {target['id']} {target['title']}")
         if dry_run:
             print("  (dry-run) " + " ".join(cmd))
@@ -252,15 +262,20 @@ def refresh_episodes(
         try:
             result = subprocess.run(cmd, cwd=PROJECT_ROOT, timeout=job_timeout)
         except subprocess.TimeoutExpired:
-            print(f"  시간 초과({job_timeout:.0f}초) — 다음 작품으로 넘어갑니다.")
-            failed.append(target["id"])
-            continue
+            # 보안 확인·차단으로 화면이 안 뜨는 경우가 많다 — 계속 접속하면 차단이 길어지므로 중단
+            print(f"  시간 초과({job_timeout:.0f}초). 남은 작품은 건너뛰고 멈춥니다.")
+            failed.extend(t["id"] for t in targets[index - 1:])
+            return ok, failed, True
         if result.returncode == 0:
             ok += 1
+        elif result.returncode in STOP_EXIT_CODES:
+            print(f"  {STOP_EXIT_CODES[result.returncode]}. 남은 작품은 건너뛰고 멈춥니다.")
+            failed.extend(t["id"] for t in targets[index - 1:])
+            return ok, failed, True
         else:
             print(f"  종료 코드 {result.returncode}")
             failed.append(target["id"])
-    return ok, failed
+    return ok, failed, False
 
 
 def print_collect_summary(kind: str, ids: list[str]) -> None:
@@ -290,7 +305,8 @@ def print_collect_summary(kind: str, ids: list[str]) -> None:
     print(f"{cfg['label']} 수집 상태: {summary}")
 
 
-def refresh_kind(kind: str, args: argparse.Namespace) -> None:
+def refresh_kind(kind: str, args: argparse.Namespace) -> bool:
+    """True 면 차단 등으로 멈춤 — 같은 사이트라 다음 kind 도 실행하지 않는다."""
     cfg = KINDS[kind]
     targets = fetch_targets(kind, args.ids)
     print(f"\n=== {cfg['label']} 정보갱신 대상: {len(targets)}편 (강제완결·등록대기 제외), 도메인 {args.domain}")
@@ -314,8 +330,9 @@ def refresh_kind(kind: str, args: argparse.Namespace) -> None:
             + (" (dry-run, 저장 안 함)" if args.dry_run else f" — {saved}건 저장")
         )
 
+    stopped = False
     if not args.end_only:
-        ok, failed = refresh_episodes(
+        ok, failed, stopped = refresh_episodes(
             kind, targets, args.domain, args.headed, args.job_timeout, args.dry_run, args.gap
         )
         if not args.dry_run:
@@ -325,6 +342,7 @@ def refresh_kind(kind: str, args: argparse.Namespace) -> None:
 
     if not args.dry_run:
         print_collect_summary(kind, [t["id"] for t in targets])
+    return stopped
 
 
 def parse_args() -> argparse.Namespace:
@@ -338,13 +356,13 @@ def parse_args() -> argparse.Namespace:
     # 보류(2026-10-31): 완결 목록 점검이 사이트에 요청을 많이 보내 Cloudflare 가 IP 대역을 차단(NGINX_CIDR_REALIP)한다.
     # 점검 방식을 개편하기 전까지 기본은 완결 판정을 하지 않고, --end-scan 을 줄 때만 실행한다.
     parser.add_argument("--end-scan", action="store_true", help="(보류 중) 완결 목록 점검으로 완결 판정 — 요청이 많아 차단 위험")
-    parser.add_argument("--headed", action="store_true", help="크롤러를 처음부터 일반 Chrome(CDP) 창으로")
+    parser.add_argument("--headed", action="store_true", help="(무시 — 정보 갱신은 항상 일반 Chrome)")
     parser.add_argument("--max-pages", type=int, default=1000, help="완결 목록 최대 페이지 (기본 1000)")
     parser.add_argument("--delay", type=float, default=3.0, help="완결 목록 페이지 간 대기(초, 기본 3 — 짧으면 Cloudflare 차단)")
     parser.add_argument("--rescan", action="store_true", help="완결 목록 캐시를 버리고 1페이지부터 다시 받기")
     parser.add_argument("--timeout", type=float, default=30, help="완결 목록 페이지 요청 제한(초)")
     parser.add_argument("--job-timeout", type=float, default=1800, help="작품 1건 회차 정보 갱신 제한(초)")
-    parser.add_argument("--gap", type=float, default=30.0, help="작품 사이 대기(초, ±30%%, 기본 30 — 짧으면 사이트 차단)")
+    parser.add_argument("--gap", type=float, default=180.0, help="작품 사이 대기(초, ±30%%, 기본 180 — 짧으면 사이트 차단)")
     parser.add_argument("--dry-run", action="store_true", help="DB 저장·크롤러 실행 없이 결과만 출력")
     args = parser.parse_args()
     args.skip_end = not args.end_scan
@@ -359,8 +377,13 @@ def parse_args() -> argparse.Namespace:
 def main() -> int:
     args = parse_args()
     started = datetime.now()
-    for kind in (["toon", "manhwa"] if args.kind == "all" else [args.kind]):
-        refresh_kind(kind, args)
+    for index, kind in enumerate(["toon", "manhwa"] if args.kind == "all" else [args.kind]):
+        # 웹툰 → 만화도 같은 원본 사이트 — 사이에 gap 만큼 쉰다
+        if index and not args.dry_run and not args.end_only and args.gap > 0:
+            time.sleep(args.gap * random.uniform(0.7, 1.3))
+        if refresh_kind(kind, args):
+            print("원본 사이트 차단·로딩 실패로 멈췄습니다. 원본이 브라우저에서 정상으로 열릴 때까지 다시 실행하지 마세요.")
+            break
     print(f"\n완료 ({(datetime.now() - started).seconds}초)")
     return 0
 
