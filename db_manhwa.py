@@ -343,7 +343,8 @@ def update_manhwa_refresh_info(work_id, status: str | None, total: int) -> dict 
             if not found:
                 return None
             before = (found[0] or "", int(found[1] or 0))
-            new_status = status or before[0]
+            # status 컬럼은 ENUM('연재','완결','중단'). 화면 문구(연재중 등)는 그대로 넣으면 1265 로 잘린다.
+            new_status = normalize_status(status) if status else before[0]
             cursor.execute(
                 "UPDATE manhwa_info SET status = %s, total_episode = %s WHERE manhwa_id = %s", (new_status, total, work_id)
             )
