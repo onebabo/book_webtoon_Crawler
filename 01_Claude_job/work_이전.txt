@@ -1,0 +1,20 @@
+도시정벌 11부
+https://onebabobook.baeoom.com/toon_info/9264
+
+[도시정벌 레거시] 사자의서 1부
+https://onebabobook.baeoom.com/toon_info/16908
+
+도시정벌 레거시:사자의서 2부
+https://onebabobook.baeoom.com/toon_info/11346
+
+3개의 작품을 
+웹툰에서   마이웹툰으로 데이터 전환하기(신규생성)
+(기존 book-id 기준으로  사용하지 않고  신규 생성하는것 처럼  새롭게 만들기)
+=> 기존꺼 그대로 두고 새롭게 만드는 방식
+
+
+그리고 기존에 웬툰 데이터는 삭제하지 않고 DB상으로 사용안함처리
+
+
+
+

@@ -72,8 +72,11 @@ def number_gaps(images: list[Path]) -> list[int]:
     return [n for n in range(numbers[0], numbers[-1] + 1) if n not in have]
 
 
-def analyze_type1(root: Path) -> tuple[list[dict], list[str]]:
-    """TYPE 1 : {path}\\{회차폴더}\\{이미지}  (회차폴더명 끝 숫자 = 회차 번호, 이미지 1단계)."""
+def analyze_type1(root: Path, chapters_file: Path | None = None) -> tuple[list[dict], list[str]]:
+    """TYPE 1 : {path}\\{회차폴더}\\{이미지}  (회차폴더명 끝 숫자 = 회차 번호, 이미지 1단계).
+
+    chapters_file 이 있으면 여러 회차가 합쳐진 폴더(예: '로드매니저 2부 01~08')를 그 파일대로 나눕니다.
+    """
     episodes: list[dict] = []
     warnings: list[str] = []
 
@@ -112,12 +115,60 @@ def analyze_type1(root: Path) -> tuple[list[dict], list[str]]:
     if not episodes:
         raise ValueError(f"회차 폴더(이미지 포함)를 찾지 못했습니다: {root}")
 
+    if chapters_file:
+        episodes = split_merged_folders(episodes, chapters_file, warnings)
     episodes.sort(key=lambda ep: ep["episode_no"])
     numbers = [ep["episode_no"] for ep in episodes]
+    if len(set(numbers)) != len(numbers):
+        raise ValueError(f"회차 번호가 중복됩니다: {sorted(n for n in numbers if numbers.count(n) > 1)}")
     missing = [n for n in range(numbers[0], numbers[-1] + 1) if n not in set(numbers)]
     if missing:
         warnings.append(f"빠진 회차 번호: {missing}")
     return episodes, warnings
+
+
+def split_merged_folders(episodes: list[dict], chapters_file: Path, warnings: list[str]) -> list[dict]:
+    """TYPE 1/2 회차 나눔 파일: 한 줄 = '회차번호<TAB>회차폴더명/시작 파일명<TAB>제목' ('#' 주석).
+
+    파일에 나온 회차 폴더는 시작 파일마다 회차를 나눕니다 (시작 파일 ~ 다음 시작 바로 앞).
+    나오지 않은 폴더는 그대로 1회차입니다.
+    """
+    if not chapters_file.is_file():
+        raise ValueError(f"회차 나눔 파일이 없습니다: {chapters_file}")
+    by_folder: dict[str, list[tuple[str, int, str]]] = {}
+    for line in chapters_file.read_text(encoding="utf-8-sig").splitlines():
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        cols = [c.strip() for c in line.split("\t")]
+        if len(cols) < 2 or not cols[0].isdigit() or "/" not in cols[1]:
+            raise ValueError(f"회차 나눔 파일 형식 오류: {line!r} (회차번호<TAB>회차폴더명/시작 파일명<TAB>제목)")
+        folder, start = cols[1].rsplit("/", 1)
+        by_folder.setdefault(folder, []).append((start, int(cols[0]), cols[2] if len(cols) > 2 else ""))
+
+    result: list[dict] = []
+    for ep in episodes:
+        starts = by_folder.pop(ep["title"], None)
+        if not starts:
+            result.append(ep)
+            continue
+        index = {p.name.lower(): i for i, p in enumerate(ep["images"])}
+        cuts = []
+        for start, no, title in starts:
+            if start.lower() not in index:
+                raise ValueError(f"회차 나눔 파일의 시작 파일이 '{ep['title']}' 에 없습니다: {start}")
+            cuts.append((index[start.lower()], no, title))
+        cuts.sort()
+        if cuts[0][0] != 0:
+            raise ValueError(f"'{ep['title']}' 의 첫 회차 시작 파일이 첫 이미지가 아닙니다: {ep['images'][0].name}")
+        for k, (begin, no, title) in enumerate(cuts):
+            end = cuts[k + 1][0] if k + 1 < len(cuts) else len(ep["images"])
+            result.append({**ep, "episode_no": no, "title": title or f"{ep['title']} ({no})",
+                           "images": ep["images"][begin:end]})
+        warnings.append(f"{ep['title']}: 회차 나눔 파일대로 {len(cuts)}회차로 나눔 ({cuts[0][1]}~{cuts[-1][1]})")
+    if by_folder:
+        raise ValueError(f"회차 나눔 파일의 폴더가 원본에 없습니다: {list(by_folder)}")
+    warnings.append(f"회차 나눔 파일: {chapters_file}")
+    return result
 
 
 def leaf_image_dirs(folder: Path) -> list[Path]:
@@ -319,19 +370,21 @@ def image_size(path: Path) -> tuple[int, int] | None:
     return None
 
 
-def plan_pages(episodes: list[dict], split: bool) -> None:
+def plan_pages(episodes: list[dict], split: bool, rtl: bool = False) -> None:
     """ep['pages'] = [(원본 이미지, 'L'|'R'|None), ...] 를 채웁니다.
 
     split 이면 가로가 세로보다 긴 이미지(JPEG/GIF/PNG/BMP)를 펼침면으로 보고 왼쪽 → 오른쪽 순서로 2페이지로 나눕니다.
+    rtl 이면 오른쪽 → 왼쪽 순서입니다 (일본 만화 정발본: 메이저, 의룡).
     세로 이미지(표지 등 단면)는 그대로 1페이지입니다.
     """
+    order = ("R", "L") if rtl else ("L", "R")
     for ep in episodes:
         pages: list[tuple[Path, str | None]] = []
         spreads = 0
         for src in ep["images"]:
             size = image_size(src) if split else None
             if size and size[0] > size[1]:
-                pages += [(src, "L"), (src, "R")]
+                pages += [(src, order[0]), (src, order[1])]
                 spreads += 1
             else:
                 pages.append((src, None))
@@ -630,18 +683,17 @@ def copy_episode_images(ep: dict, dest_dir: Path) -> list[dict]:
         suffix = ".jpg" if part else FORMAT_EXTS.get(image_format(src) or "", src.suffix.lower())
         targets.append((page_no, src, part, dest_dir / f"{page_no:03d}{suffix}"))
 
-    jobs: dict[Path, list[Path]] = {}
+    jobs: dict[Path, dict[str, Path]] = {}
     for _page_no, src, part, dest in targets:
         try:
             if part:
-                jobs.setdefault(src, [])
-                jobs[src].append(dest)
+                jobs.setdefault(src, {})[part] = dest
             elif not (dest.is_file() and dest.stat().st_size == src.stat().st_size):
                 shutil.copy2(src, dest)
         except OSError as exc:
             print(f"    복사 실패: {src} → {dest} ({exc})")
-    split_spreads([(src, left, right) for src, (left, right) in jobs.items()
-                   if not (left.is_file() and right.is_file())], trim=ep.get("trim", False))
+    split_spreads([(src, d["L"], d["R"]) for src, d in jobs.items()
+                   if not (d["L"].is_file() and d["R"].is_file())], trim=ep.get("trim", False))
 
     keep = {dest for *_rest, dest in targets}
     for old in dest_dir.iterdir():
@@ -772,7 +824,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--name", required=True, help="제목")
     parser.add_argument("--path", required=True, help="원본 폴더 경로")
     parser.add_argument("-o", "--output", default=str(DEFAULT_BASE_PATH), help="복사 루트 경로 (기본 D:/booktoon)")
-    parser.add_argument("--chapters", default="", help="TYPE 4 회차 나눔 파일 (기본 01_Claude_job/mybook_chapters/{원본 폴더명}.txt)")
+    parser.add_argument("--chapters", default="", help="회차 나눔 파일 (TYPE 4 기본 01_Claude_job/mybook_chapters/{원본 폴더명}.txt, "
+                                                       "TYPE 1/2 는 합쳐진 회차 폴더를 나눌 때만 지정)")
+    parser.add_argument("--rtl", action="store_true", help="펼침면을 오른쪽 → 왼쪽 순서로 나눔 (일본 만화 정발본)")
     parser.add_argument("--dry-run", action="store_true", help="폴더 구조 분석 결과만 출력 (복사/DB 없음)")
     return parser.parse_args()
 
@@ -795,14 +849,16 @@ def main() -> int:
 
     try:
         prepare_zip_folders(root, args.dry_run)
-        if src_type == 4:
-            episodes, warnings = analyze_type4(root, Path(args.chapters) if args.chapters else None)
+        if src_type in (1, 2, 4):
+            episodes, warnings = ANALYZERS[src_type](root, Path(args.chapters) if args.chapters else None)
         else:
             episodes, warnings = ANALYZERS[src_type](root)
     except ValueError as exc:
         print(f"[분석 실패] {exc}")
         return 1
-    plan_pages(episodes, src_type in SPLIT_TYPES)
+    plan_pages(episodes, src_type in SPLIT_TYPES, args.rtl)
+    if args.rtl:
+        warnings.append("펼침면 순서: 오른쪽 → 왼쪽 (--rtl)")
     print_analysis(root, src_type, episodes, warnings)
     if args.dry_run:
         print("--dry-run: 복사/DB 등록 없이 종료합니다.")
@@ -863,7 +919,8 @@ def main() -> int:
 
     write_info_file(toon_dir, my_toon_id, args.name.strip(), src_type, root, episodes)
     print(f"마이 북 등록 끝: {my_toon_id} '{args.name.strip()}' ({len(episodes)}회차, 실패 회차 {failed})")
-    print(f"  다시 실행(이어하기): python toon_create.py --TYPE {src_type} --bookid {my_toon_id} --name \"{args.name.strip()}\" --path \"{root}\"")
+    extra = (" --rtl" if args.rtl else "") + (f" --chapters \"{args.chapters}\"" if args.chapters else "")
+    print(f"  다시 실행(이어하기): python toon_create.py --TYPE {src_type} --bookid {my_toon_id} --name \"{args.name.strip()}\" --path \"{root}\"{extra}")
     return 1 if failed else 0
 
 
