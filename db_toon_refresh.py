@@ -11,7 +11,7 @@
 2) 회차 정보: 작품마다 `db_toon_step.py "{도메인}/webtoon/{ID}" --refresh` (만화: db_manhwa_step.py)
    를 순서대로 실행해 상태·총 회차·수집 현황을 다시 가져옵니다. (이미지 수집은 하지 않음)
    2026-11: 정보 갱신이 원본 IP 대역 차단(NGINX_CIDR_REALIP)을 반복해 일으켜 --refresh 로 바꿨습니다 —
-   일반 Chrome 으로 목록 첫 화면 1번만 열고 스크롤·페이지 넘김·섬네일 요청을 하지 않습니다. 작품 사이 --gap(기본 120초),
+   일반 Chrome 으로 목록 첫 화면 1번만 열고 스크롤·페이지 넘김·섬네일 요청을 하지 않습니다. 작품 사이 --gap(기본 60초),
    차단 화면(종료 코드 5)·로딩 실패(4)·시간 초과면 남은 작품(웹툰·만화 모두)을 건너뛰고 멈춥니다.
 
 - 강제완결(end_state='강제완결', 웹 상세에서 관리자가 지정) 작품은 대상에서 뺍니다.
@@ -240,7 +240,7 @@ def refresh_episodes(
     headed: bool,
     job_timeout: float,
     dry_run: bool,
-    gap: float = 120.0,
+    gap: float = 60.0,
 ) -> tuple[int, list[str], bool]:
     """작품마다 db_toon_step.py / db_manhwa_step.py --refresh 실행 → (성공 수, 실패 ID 목록, 차단 등으로 멈춤).
     headed 는 예전 옵션 호환용(무시)."""
@@ -361,7 +361,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--rescan", action="store_true", help="완결 목록 캐시를 버리고 1페이지부터 다시 받기")
     parser.add_argument("--timeout", type=float, default=30, help="완결 목록 페이지 요청 제한(초)")
     parser.add_argument("--job-timeout", type=float, default=1800, help="작품 1건 회차 정보 갱신 제한(초)")
-    parser.add_argument("--gap", type=float, default=120.0, help="작품 사이 대기(초, ±30%%, 기본 120 — 짧으면 사이트 차단)")
+    parser.add_argument("--gap", type=float, default=60.0, help="작품 사이 대기(초, ±30%%, 기본 60 — 짧으면 사이트 차단)")
     parser.add_argument("--dry-run", action="store_true", help="DB 저장·크롤러 실행 없이 결과만 출력")
     args = parser.parse_args()
     args.skip_end = not args.end_scan
