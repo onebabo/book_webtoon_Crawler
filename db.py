@@ -308,6 +308,35 @@ def fetch_episode_status(toon_id: str) -> dict[str, dict]:
     return result
 
 
+def fetch_missing_episodes(toon_id: str) -> list[dict]:
+    """미수집 회차 재수집(--missing) 대상: has_images=0 인 회차 (episode_no 오름차순).
+
+    has_images=0 = image_cnt 와 saved_image_cnt 가 다름(일부 실패) 또는 image_cnt=0(아직 한 번도 안 받음, 둘 다 0).
+    """
+    sql = """
+        SELECT episode_code, episode_no, episode_title, org_url, image_cnt, saved_image_cnt
+          FROM toon_episode
+         WHERE toon_id = %s
+           AND has_images = 0
+           AND COALESCE(org_url, '') <> ''
+         ORDER BY episode_no
+    """
+    with get_connection() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(sql, (toon_id,))
+            return [
+                {
+                    "episode_code": code,
+                    "episode_no": int(no),
+                    "episode_title": title or f"{no}화",
+                    "org_url": org_url,
+                    "image_cnt": int(image_cnt or 0),
+                    "saved_image_cnt": int(saved or 0),
+                }
+                for code, no, title, org_url, image_cnt, saved in cursor.fetchall()
+            ]
+
+
 def save_episode_images(
     toon_id: str,
     episode_code: str,

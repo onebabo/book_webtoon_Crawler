@@ -29,6 +29,7 @@ from playwright.sync_api import sync_playwright
 from db import (
     config_path,
     fetch_episode_status,
+    fetch_missing_episodes,
     fetch_work_list_status,
     load_mysql_config,
     save_episode_images,
@@ -1088,6 +1089,65 @@ def save_refresh_info(page, data: dict, expected: int | None, toon_id: str) -> d
     return {"targets": 0, "ok": 0, "fail": 0}
 
 
+def collect_targets(
+    session: BrowserSession, toon_id: str, targets: list[dict], base_path: Path, timeout_ms: int, wait: float,
+) -> dict:
+    """대상 회차의 뷰어를 차례로 열어 이미지를 저장하고 회차마다 DB 에 반영합니다."""
+    ok = fail = 0
+    for index, ep in enumerate(targets, start=1):
+        print(f"[{index}/{len(targets)}] {ep['episode_no']}화 {ep['episode_title']} - {ep['org_url']}")
+        try:
+            image_cnt, saved = collect_episode_images(session, toon_id, ep, base_path, timeout_ms)
+        except ChallengeError:
+            raise
+        except PlaywrightTimeoutError as e:
+            print(f"  - 실패: {e}")
+            fail += 1
+            continue
+        except Exception as e:  # noqa: BLE001
+            if not _is_closed_error(e):
+                raise
+            # 탭만 닫힌 경우 한 번 더 붙잡아 재시도(전체 브라우저 종료면 ensure_page 가 ChallengeError)
+            print(f"  - 탭이 닫혀 재시도합니다: {e}")
+            try:
+                session.ensure_page()
+                image_cnt, saved = collect_episode_images(session, toon_id, ep, base_path, timeout_ms)
+            except ChallengeError:
+                raise
+            except Exception as e2:  # noqa: BLE001
+                print(f"  - 실패: {e2}")
+                fail += 1
+                continue
+        image_dir = episode_dir(base_path, toon_id, ep["episode_no"]).as_posix()
+        save_episode_images(toon_id, ep["episode_code"], image_dir, image_cnt, saved)
+        if image_cnt and len(saved) >= image_cnt:
+            ok += 1
+            print(f"  - 저장 완료: {len(saved)}장 → {image_dir}")
+        else:
+            fail += 1
+            print(f"  - 일부 실패: {len(saved)}/{image_cnt}장 → {image_dir}")
+        if index < len(targets):
+            time.sleep(wait)
+    return {"targets": len(targets), "ok": ok, "fail": fail}
+
+
+def run_missing(session: BrowserSession, args, toon_id: str, base_path: Path, targets: list[dict]) -> dict:
+    """--missing(웹 [바로 재수집]): DB 에서 미수집(has_images=0) 회차만 골라 그 회차 뷰어만 엽니다.
+
+    목록 페이지(스크롤·?epage=N 페이지 넘김)·섬네일·정보 파일·작품 정보 DB 갱신 없이 회차 뷰어만 엽니다.
+    회차 주소(org_url)의 도메인은 도메인 일괄변경에 맞춰 현재 원본 주소(args.url) 도메인으로 바꿉니다.
+    원본 목록에 새로 올라와 DB 에 행이 없는 회차는 대상이 아닙니다 (신규등록·전체 수집 명령으로 받음).
+    """
+    origin = urlparse(args.url)
+    for ep in targets:
+        ep["org_url"] = urlparse(ep["org_url"])._replace(scheme=origin.scheme, netloc=origin.netloc).geturl()
+    print(
+        f"미수집 회차 재수집 [{toon_id}]: DB has_images=0 {len(targets)}회차 "
+        f"(목록 페이지·섬네일 요청 없음, 저장 경로: {(base_path / str(toon_id)).as_posix()}/<회차>)"
+    )
+    return collect_targets(session, toon_id, targets, base_path, int(args.timeout * 1000), args.wait)
+
+
 def run_session(session: BrowserSession, args, toon_id: str, base_path: Path) -> dict:
     timeout_ms = int(args.timeout * 1000)
     session.goto(args.url, LIST_READY_SELECTOR, timeout_ms, "웹툰 목록")
@@ -1133,42 +1193,7 @@ def run_session(session: BrowserSession, args, toon_id: str, base_path: Path) ->
     if args.episode_code and not any(ep["episode_code"] == args.episode_code for ep in episodes):
         print(f"주의: 회차 코드 {args.episode_code} 를 목록에서 찾지 못했습니다.")
     print(f"이미지 수집 대상: {len(targets)}회차 (저장 경로: {(base_path / toon_id).as_posix()}/<회차>)")
-    ok = fail = 0
-    for index, ep in enumerate(targets, start=1):
-        print(f"[{index}/{len(targets)}] {ep['episode_no']}화 {ep['episode_title']} - {ep['org_url']}")
-        try:
-            image_cnt, saved = collect_episode_images(session, toon_id, ep, base_path, timeout_ms)
-        except ChallengeError:
-            raise
-        except PlaywrightTimeoutError as e:
-            print(f"  - 실패: {e}")
-            fail += 1
-            continue
-        except Exception as e:  # noqa: BLE001
-            if not _is_closed_error(e):
-                raise
-            # 탭만 닫힌 경우 한 번 더 붙잡아 재시도(전체 브라우저 종료면 ensure_page 가 ChallengeError)
-            print(f"  - 탭이 닫혀 재시도합니다: {e}")
-            try:
-                session.ensure_page()
-                image_cnt, saved = collect_episode_images(session, toon_id, ep, base_path, timeout_ms)
-            except ChallengeError:
-                raise
-            except Exception as e2:  # noqa: BLE001
-                print(f"  - 실패: {e2}")
-                fail += 1
-                continue
-        image_dir = episode_dir(base_path, toon_id, ep["episode_no"]).as_posix()
-        save_episode_images(toon_id, ep["episode_code"], image_dir, image_cnt, saved)
-        if image_cnt and len(saved) >= image_cnt:
-            ok += 1
-            print(f"  - 저장 완료: {len(saved)}장 → {image_dir}")
-        else:
-            fail += 1
-            print(f"  - 일부 실패: {len(saved)}/{image_cnt}장 → {image_dir}")
-        if index < len(targets):
-            time.sleep(args.wait)
-    return {"targets": len(targets), "ok": ok, "fail": fail}
+    return collect_targets(session, toon_id, targets, base_path, timeout_ms, args.wait)
 
 
 def close_toki_browsers(profile_dir: Path) -> int:
@@ -1194,6 +1219,15 @@ def run(args) -> int:
         return 2
     toon_id = toon_id_from_url(args.url)
     base_path = resolve_base_path(args.output)
+    missing: list[dict] | None = None
+    if args.missing:
+        # 바로 재수집: 브라우저를 띄우기 전에 DB 에서 대상부터 고른다 — 없으면 원본 사이트에 접속하지 않는다
+        missing = fetch_missing_episodes(toon_id)
+        if args.num:
+            missing = missing[: args.num]
+        if not missing:
+            print(f"미수집 회차가 없습니다 (웹툰 {toon_id}, DB has_images=0 0건) — 원본 사이트에 접속하지 않고 종료합니다.")
+            return 0
     profile_dir = Path(args.profile) if args.profile else DEFAULT_USER_DATA_DIR
     closed = close_toki_browsers(profile_dir)  # 목록 브라우저 체크 이전에 기존 창 정리
     if closed:
@@ -1205,7 +1239,10 @@ def run(args) -> int:
             try:
                 print(f"1차 접근(.toki_browser headless): {profile_dir}")
                 with BrowserSession(playwright, profile_dir, headless=True) as session:
-                    result = run_session(session, args, toon_id, base_path)
+                    result = (
+                        run_missing(session, args, toon_id, base_path, missing) if missing
+                        else run_session(session, args, toon_id, base_path)
+                    )
             except SiteBlockedError as e:
                 print(e)
                 return EXIT_SITE_BLOCKED
@@ -1214,10 +1251,13 @@ def run(args) -> int:
                 print("일반 Chrome 창을 열어 보안 확인 후 이어서 진행합니다(저장된 회차는 건너뜀).")
         if result is None:
             try:
-                # 정보 재수집은 빈 탭으로 띄운 뒤 goto 로 작품 페이지를 정확히 1번만 연다
-                start_url = None if args.refresh else args.url
+                # 정보 재수집은 빈 탭으로 띄운 뒤 goto 로 작품 페이지를 정확히 1번만 연다 (미수집 재수집은 첫 회차 뷰어로 바로 이동)
+                start_url = None if (args.refresh or missing) else args.url
                 with BrowserSession(playwright, profile_dir, headless=False, start_url=start_url) as session:
-                    result = run_session(session, args, toon_id, base_path)
+                    result = (
+                        run_missing(session, args, toon_id, base_path, missing) if missing
+                        else run_session(session, args, toon_id, base_path)
+                    )
             except SiteBlockedError as e:
                 print(e)
                 print("차단 중에는 다시 열수록 차단이 길어집니다. 원본이 브라우저에서 정상으로 열릴 때까지 수집을 멈추세요.")
@@ -1253,6 +1293,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--refresh", action="store_true",
         help="정보 재수집: 일반 Chrome 으로 목록 첫 화면 1번만 열어 상태·총 회차만 DB 반영 (스크롤·페이지 넘김·섬네일 없음). 차단 화면이면 종료 코드 5",
+    )
+    parser.add_argument(
+        "--missing", action="store_true",
+        help="미수집 회차만 재수집(웹 [바로 재수집]): 목록 페이지를 열지 않고 DB has_images=0 회차(image_cnt≠saved_image_cnt 또는 미수집)의 뷰어만 연다. --num 으로 개수 제한",
     )
     parser.add_argument("--headed", action="store_true", help="처음부터 일반 Chrome(CDP) 창으로 진행")
     parser.add_argument("--profile", default=None, help=f"브라우저 프로필 경로 (기본 {DEFAULT_USER_DATA_DIR})")
