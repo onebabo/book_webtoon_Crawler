@@ -233,7 +233,7 @@ STOP_EXIT_CODES = {
     5: "원본 사이트가 이 IP 를 차단했습니다(Access denied)",
 }
 
-
+# gap: float = 180.0,
 def refresh_episodes(
     kind: str,
     targets: list[dict],
@@ -241,7 +241,7 @@ def refresh_episodes(
     headed: bool,
     job_timeout: float,
     dry_run: bool,
-    gap: float = 180.0,
+    gap: float = 120.0,
 ) -> tuple[int, list[str], bool]:
     """작품마다 db_toon_step.py / db_manhwa_step.py --refresh 실행 → (성공 수, 실패 ID 목록, 차단 등으로 멈춤).
     headed 는 예전 옵션 호환용(무시)."""
