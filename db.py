@@ -308,6 +308,20 @@ def fetch_episode_status(toon_id: str) -> dict[str, dict]:
     return result
 
 
+def add_new_episodes(toon_id: str, episodes: list[dict]) -> int:
+    """미수집 회차 재수집(--missing) 1단계: 원본 목록에 새로 올라온 회차 행을 추가합니다 (이미지 수집 컬럼은 0).
+
+    작품 정보(제목·소개·카테고리·표지)는 건드리지 않고, 회차 집계(마지막 회차 등)만 toon_work_list 에 반영합니다.
+    """
+    if not episodes:
+        return 0
+    with get_connection() as conn:
+        upsert_toon_episode_rows(conn, toon_id, episodes)
+        with conn.cursor() as cursor:
+            sync_work_list(cursor, toon_id, mark_started=False)
+    return len(episodes)
+
+
 def fetch_missing_episodes(toon_id: str) -> list[dict]:
     """미수집 회차 재수집(--missing) 대상: has_images=0 인 회차 (episode_no 오름차순).
 

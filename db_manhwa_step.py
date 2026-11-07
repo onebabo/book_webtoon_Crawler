@@ -32,6 +32,7 @@ from playwright.sync_api import sync_playwright
 from db import config_path, load_mysql_config
 from db_manhwa import (
     fetch_episode_status,
+    add_new_episodes,
     fetch_missing_episodes,
     fetch_work_list_status,
     save_episode_images,
@@ -1131,20 +1132,90 @@ def collect_targets(
     return {"targets": len(targets), "ok": ok, "fail": fail}
 
 
-def run_missing(session: BrowserSession, args, manhwa_id: str, base_path: Path, targets: list[dict]) -> dict:
-    """--missing(웹 [바로 재수집]): DB 에서 미수집(has_images=0) 회차만 골라 그 회차 뷰어만 엽니다.
+def add_missing_episode_rows(session: BrowserSession, args, manhwa_id: str) -> None:
+    """--missing 1단계: 목록에서 DB 에 없는 새 회차 행을 먼저 추가하고 연재 상태·총 회차를 맞춥니다.
 
-    목록 페이지(스크롤·?epage=N 페이지 넘김)·섬네일·정보 파일·작품 정보 DB 갱신 없이 회차 뷰어만 엽니다.
-    회차 주소(org_url)의 도메인은 도메인 일괄변경에 맞춰 현재 원본 주소(args.url) 도메인으로 바꿉니다.
-    원본 목록에 새로 올라와 DB 에 행이 없는 회차는 대상이 아닙니다 (신규등록·전체 수집 명령으로 받음).
+    목록 첫 화면(최신순)만 읽는다. 첫 화면 회차가 전부 새 회차일 때만 그 뒤에도 새 회차가 있을 수 있으므로
+    (스크롤로 첫 화면을 마저 읽고) 아는 회차가 나오는 페이지까지만 ?epage=N 을 연다. 섬네일·정보 파일·작품 정보 갱신 없음.
     """
+    timeout_ms = int(args.timeout * 1000)
+    session.goto(args.url, LIST_READY_SELECTOR, timeout_ms, "만화 목록")
+    page = session.page
+    try:
+        page.wait_for_selector(EPISODE_ROW_SELECTOR, timeout=15000)
+    except PlaywrightTimeoutError:
+        print("회차 목록(li.ep-row-v2)을 찾지 못했습니다.")
+    data = page.evaluate(EXTRACT_LIST_JS) or {}
+    expected = to_int((data.get("stats") or {}).get("총 회차"))
+    if not data.get("title") or not expected:
+        raise RefreshReadError("목록 화면에서 제목·총 회차를 읽지 못해 새 회차를 추가하지 않습니다 (화면 구조 변경 확인).")
+    list_url = page.url
+    known = {str(code) for code in fetch_episode_status(int(manhwa_id))}
+
+    def new_rows(items: list[dict]) -> list[dict]:
+        return [ep for ep in build_episode_rows(list_url, {"episodes": items}, manhwa_id) if str(ep["episode_code"]) not in known]
+
+    items = list(data.get("episodes") or [])
+    page_new = new_rows(items)
+    all_new = bool(items) and len(page_new) == len(build_episode_rows(list_url, {"episodes": items}, manhwa_id))
+    last_page = to_int(page.evaluate(EPISODE_PAGER_JS)) or 1
+    if all_new and len(known) + len(page_new) < expected and last_page == 1:
+        load_all_episode_rows(page, expected)
+        items = list((page.evaluate(EXTRACT_LIST_JS) or {}).get("episodes") or [])
+        page_new = new_rows(items)
+    page_no = 2
+    while all_new and len(known) + len(new_rows(items)) < expected and page_no <= last_page:
+        time.sleep(args.wait)
+        session.goto(episode_page_url(list_url, page_no), LIST_READY_SELECTOR, timeout_ms, f"회차 목록 {page_no}페이지")
+        page = session.page
+        try:
+            page.wait_for_selector(EPISODE_ROW_SELECTOR, timeout=15000)
+        except PlaywrightTimeoutError:
+            break
+        found = (page.evaluate(EXTRACT_LIST_JS) or {}).get("episodes") or []
+        found_rows = build_episode_rows(list_url, {"episodes": found}, manhwa_id)
+        all_new = bool(found_rows) and all(str(ep["episode_code"]) not in known for ep in found_rows)
+        items.extend(found)
+        page_no += 1
+
+    added = new_rows(items)
+    data["episodes"] = items
+    info, _categories = build_manhwa_info(list_url, data, manhwa_id, build_episode_rows(list_url, data, manhwa_id))
+    total = info["total_episode"] if last_page == 1 else len(known) + len(added)
+    add_new_episodes(int(manhwa_id), added)
+    status = (data.get("status") or "").strip() or None
+    result = update_manhwa_refresh_info(int(manhwa_id), status, total)
+    if result is None:
+        raise RefreshReadError(f"만화 정보가 DB 에 없어 새 회차를 추가하지 않습니다: {manhwa_id}")
+    (old_status, old_total), (new_status, new_total) = result["before"], result["after"]
+    nos = ", ".join(str(ep["episode_no"]) for ep in added[:20]) + (" …" if len(added) > 20 else "")
+    print(
+        f"새 회차 {len(added)}건 추가{f' ({nos}화)' if added else ''} — DB 회차 {len(known)} → {len(known) + len(added)}, "
+        f"상태 {old_status or '-'} → {new_status or '-'}, 총 회차 {old_total} → {new_total} (화면 총 회차 {expected})"
+    )
+
+
+def run_missing(session: BrowserSession, args, manhwa_id: str, base_path: Path) -> dict:
+    """--missing(웹 [바로 재수집]): ① 목록에서 새 회차 행 추가(add_missing_episode_rows) ② DB 미수집(has_images=0) 회차만 뷰어를 엽니다.
+
+    목록은 첫 화면 위주로만 읽고(섬네일·정보 파일·작품 정보 갱신 없음) 이미 받은 회차는 열지 않습니다.
+    회차 주소(org_url)의 도메인은 도메인 일괄변경에 맞춰 현재 원본 주소(args.url) 도메인으로 바꿉니다.
+    """
+    add_missing_episode_rows(session, args, manhwa_id)
+    targets = fetch_missing_episodes(int(manhwa_id))
+    if args.num:
+        targets = targets[: args.num]
+    if not targets:
+        print("미수집 회차가 없습니다 (DB has_images=0 0건).")
+        return {"targets": 0, "ok": 0, "fail": 0}
     origin = urlparse(args.url)
     for ep in targets:
         ep["org_url"] = urlparse(ep["org_url"])._replace(scheme=origin.scheme, netloc=origin.netloc).geturl()
     print(
         f"미수집 회차 재수집 [{manhwa_id}]: DB has_images=0 {len(targets)}회차 "
-        f"(목록 페이지·섬네일 요청 없음, 저장 경로: {(base_path / str(manhwa_id)).as_posix()}/<회차>)"
+        f"(저장 경로: {(base_path / str(manhwa_id)).as_posix()}/<회차>)"
     )
+    time.sleep(args.wait)
     return collect_targets(session, manhwa_id, targets, base_path, int(args.timeout * 1000), args.wait)
 
 
@@ -1219,15 +1290,7 @@ def run(args) -> int:
         return 2
     manhwa_id = manhwa_id_from_url(args.url)
     base_path = resolve_base_path(args.output)
-    missing: list[dict] | None = None
-    if args.missing:
-        # 바로 재수집: 브라우저를 띄우기 전에 DB 에서 대상부터 고른다 — 없으면 원본 사이트에 접속하지 않는다
-        missing = fetch_missing_episodes(int(manhwa_id))
-        if args.num:
-            missing = missing[: args.num]
-        if not missing:
-            print(f"미수집 회차가 없습니다 (만화 {manhwa_id}, DB has_images=0 0건) — 원본 사이트에 접속하지 않고 종료합니다.")
-            return 0
+    missing = args.missing
     profile_dir = Path(args.profile) if args.profile else DEFAULT_USER_DATA_DIR
     closed = close_toki_browsers(profile_dir)  # 목록 브라우저 체크 이전에 기존 창 정리
     if closed:
@@ -1240,7 +1303,7 @@ def run(args) -> int:
                 print(f"1차 접근(.toki_browser_manhwa headless): {profile_dir}")
                 with BrowserSession(playwright, profile_dir, headless=True) as session:
                     result = (
-                        run_missing(session, args, manhwa_id, base_path, missing) if missing
+                        run_missing(session, args, manhwa_id, base_path) if missing
                         else run_session(session, args, manhwa_id, base_path)
                     )
             except SiteBlockedError as e:
@@ -1251,11 +1314,11 @@ def run(args) -> int:
                 print("일반 Chrome 창을 열어 보안 확인 후 이어서 진행합니다(저장된 회차는 건너뜀).")
         if result is None:
             try:
-                # 정보 재수집은 빈 탭으로 띄운 뒤 goto 로 작품 페이지를 정확히 1번만 연다 (미수집 재수집은 첫 회차 뷰어로 바로 이동)
+                # 정보 재수집은 빈 탭으로 띄운 뒤 goto 로 작품 페이지를 정확히 1번만 연다 (미수집 재수집도 목록 첫 화면부터)
                 start_url = None if (args.refresh or missing) else args.url
                 with BrowserSession(playwright, profile_dir, headless=False, start_url=start_url) as session:
                     result = (
-                        run_missing(session, args, manhwa_id, base_path, missing) if missing
+                        run_missing(session, args, manhwa_id, base_path) if missing
                         else run_session(session, args, manhwa_id, base_path)
                     )
             except SiteBlockedError as e:
@@ -1296,7 +1359,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--missing", action="store_true",
-        help="미수집 회차만 재수집(웹 [바로 재수집]): 목록 페이지를 열지 않고 DB has_images=0 회차(image_cnt≠saved_image_cnt 또는 미수집)의 뷰어만 연다. --num 으로 개수 제한",
+        help="미수집 회차만 재수집(웹 [바로 재수집]): 목록 첫 화면에서 새 회차 행을 먼저 추가한 뒤 DB has_images=0 회차(image_cnt≠saved_image_cnt 또는 미수집)의 뷰어만 연다. --num 으로 개수 제한",
     )
     parser.add_argument("--headed", action="store_true", help="처음부터 일반 Chrome(CDP) 창으로 진행")
     parser.add_argument("--profile", default=None, help=f"브라우저 프로필 경로 (기본 {DEFAULT_USER_DATA_DIR})")
