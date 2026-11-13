@@ -3,7 +3,7 @@
 만화 페이지(/manhwa/{id})는 웹툰과 화면 구조(hero-v2 / ep-row-v2 / vw-imgs)가 같고 주소·ID만 다릅니다.
 ID 가 웹툰과 겹치므로(/webtoon/2 ≠ /manhwa/2) DB 테이블·저장 폴더·브라우저 프로필을 따로 씁니다.
 
-1) 만화 목록 페이지(https://toki35.com/manhwa/{manhwa_id})에서 작품 정보·회차 목록·섬네일 추출
+1) 만화 목록 페이지(https://toki36.com/manhwa/{manhwa_id})에서 작품 정보·회차 목록·섬네일 추출
 2) manhwa_info / manhwa_category / manhwa_episode / manhwa_work_list DB 갱신
 3) (--createonly Y 가 아니면) 이미지 미수집 회차의 뷰어 페이지를 같은 브라우저로 순서대로 열어
    이미지를 로컬에 직접 저장: <기본경로>/{manhwa_id}/{episode_no}/001.jpg ...
@@ -50,7 +50,7 @@ from toki_chrome_cdp import (
 DEFAULT_BASE_PATH = Path("D:/bookmanhwa")  # 기본 저장 루트 경로 (웹툰 D:/booktoon 과 ID 가 겹쳐 분리)
 # 웹툰 수집(db_toon_step.py, .toki_browser)과 동시에 돌려도 서로 크롬을 닫지 않도록 프로필 분리
 DEFAULT_USER_DATA_DIR = Path("D:/booktool/booktoon/.toki_browser_manhwa")
-DEFAULT_URL = "https://toki35.com/manhwa/12751"  # 기본 만화 URL(미지정 시)
+DEFAULT_URL = "https://toki36.com/manhwa/12751"  # 기본 만화 URL(미지정 시)
 EPISODE_WAIT_SEC = 2.0  # 회차 간 대기(초)
 IMAGE_RETRY = 2  # 이미지 1장 다운로드 재시도 횟수
 # 뷰어에 섞인 가짜 이미지 확장자. 진짜 장면도 .js/.css/.woff/.json 등으로 위장해 오므로 그런 확장자는 넣지 않는다.
@@ -1346,7 +1346,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="만화 1건 정보/회차 이미지 수집 (toki manhwa)")
     parser.add_argument(
         "url", nargs="?", default=DEFAULT_URL,
-        help="만화 목록 URL (예: https://toki35.com/manhwa/12751) 또는 회차 URL(…/manhwa/12751/132716: 그 회차만 수집)",
+        help="만화 목록 URL (예: https://toki36.com/manhwa/12751) 또는 회차 URL(…/manhwa/12751/132716: 그 회차만 수집)",
     )
     parser.add_argument("-o", "--output", default=str(DEFAULT_BASE_PATH), help="저장 루트 경로 (기본 D:/bookmanhwa)")
     parser.add_argument("--createonly", default="N", help="Y: 작품정보/회차목록/섬네일/DB까지만, 이미지 수집 생략")

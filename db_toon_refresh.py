@@ -44,7 +44,7 @@ from pathlib import Path
 
 from db import get_connection
 
-DEFAULT_DOMAIN = "https://toki35.com"
+DEFAULT_DOMAIN = "https://toki36.com"
 END_STATE_SERIAL = "연재"
 END_STATE_END = "완결"
 END_STATE_FORCE = "강제완결"

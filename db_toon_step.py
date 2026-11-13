@@ -1,6 +1,6 @@
 """웹툰 1건 수집 파이프라인 (book_web_Crawler/db_book_step.py 의 웹툰 버전).
 
-1) 웹툰 목록 페이지(https://toki34.com/webtoon/{toon_id})에서 작품 정보·회차 목록·섬네일 추출
+1) 웹툰 목록 페이지(https://toki36.com/webtoon/{toon_id})에서 작품 정보·회차 목록·섬네일 추출
 2) toon_info / toon_category / toon_episode / toon_work_list DB 갱신
 3) (--createonly Y 가 아니면) 이미지 미수집 회차의 뷰어 페이지를 같은 브라우저로 순서대로 열어
    이미지를 로컬에 직접 저장: <기본경로>/{toon_id}/{episode_no}/001.jpg ...
@@ -47,7 +47,7 @@ from toki_chrome_cdp import (
 )
 
 DEFAULT_BASE_PATH = Path("D:/booktoon")  # 기본 저장 루트 경로
-DEFAULT_URL = "https://toki34.com/webtoon/847903"  # 기본 웹툰 URL(미지정 시)
+DEFAULT_URL = "https://toki36.com/webtoon/847903"  # 기본 웹툰 URL(미지정 시)
 EPISODE_WAIT_SEC = 2.0  # 회차 간 대기(초)
 IMAGE_RETRY = 2  # 이미지 1장 다운로드 재시도 횟수
 # 뷰어에 섞인 가짜 이미지 확장자. 진짜 장면도 .js/.css/.woff/.json 등으로 위장해 오므로 그런 확장자는 넣지 않는다.
@@ -1346,7 +1346,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="웹툰 1건 정보/회차 이미지 수집 (toki webtoon)")
     parser.add_argument(
         "url", nargs="?", default=DEFAULT_URL,
-        help="웹툰 목록 URL (예: https://toki34.com/webtoon/847903, …/webtoon/u-bt-ok_adultery-8ddc2430) 또는 회차 URL(…/webtoon/4583/1057871: 그 회차만 수집)",
+        help="웹툰 목록 URL (예: https://toki36.com/webtoon/847903, …/webtoon/u-bt-ok_adultery-8ddc2430) 또는 회차 URL(…/webtoon/4583/1057871: 그 회차만 수집)",
     )
     parser.add_argument("-o", "--output", default=str(DEFAULT_BASE_PATH), help="저장 루트 경로 (기본 D:/booktoon)")
     parser.add_argument("--createonly", default="N", help="Y: 작품정보/회차목록/섬네일/DB까지만, 이미지 수집 생략")
